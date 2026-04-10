@@ -5,24 +5,6 @@ import torch.nn.functional as F
 from typing import Optional
 
 
-class MLP(nn.Module):
-
-    """
-    Multi-layer perceptron. Configurable number of layers and hidden dimensions.
-    """
-    def __init__(self, in_dim: int, out_dim: int, hidden_dim: int, num_layers: int = 2, act: Optional[str] = "relu"):
-        super().__init__()
-        self.layers = nn.ModuleList(
-            [nn.Linear(in_dim, hidden_dim), *([nn.Linear(hidden_dim, hidden_dim) for _ in range(num_layers - 2)]), nn.Linear(hidden_dim, out_dim)]
-        )
-        self.act = get_activation(act)
-
-    def forward(self, x: torch.Tensor) -> torch.Tensor:
-        for layer in self.layers:
-            x = layer(x)
-            x = self.act(x)
-        return x
-
 def get_norm(norm: Optional[str] = None, num_channels: int = 64, dim: int = 2) -> Optional[nn.Module]:
     """
     norm: string or None

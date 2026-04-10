@@ -12,8 +12,13 @@ def add_bias(x: torch.Tensor) -> torch.Tensor:
 
 class ConcatFusion(nn.Module):
     """Concatenate modality features along feature dimension."""
+
+    def __init__(self, dim: int = 1):
+        super().__init__()
+        self.dim = dim
+
     def forward(self, features: List[torch.Tensor]) -> torch.Tensor:
-        return torch.cat(features, dim=1)
+        return torch.cat(features, dim=self.dim)
 
 
 class AdditiveFusion(nn.Module):

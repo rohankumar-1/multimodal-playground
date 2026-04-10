@@ -1,3 +1,3 @@
-from multimodal.heads.classifier import ClassifierHead
+from multimodal.heads.basic import MultiTaskHead, MultiTaskLinearHead, MultiTaskMLPHead
 
-__all__ = ["ClassifierHead"]
+__all__ = ["MultiTaskHead", "MultiTaskLinearHead", "MultiTaskMLPHead"]

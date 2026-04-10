@@ -5,23 +5,41 @@ from torch import nn
 from typing import Optional
 from multimodal.layers.utils import get_activation
 
-class MLP(nn.Module):
 
+
+class MLP(nn.Module):
     """
-    Multi-layer perceptron. Configurable number of layers and hidden dimensions.
+    Multi-layer perceptron with correct dropout & activations.
+    Hidden layers: Linear → Activation → Dropout
+    Final layer: Linear only.
     """
-    def __init__(self, in_dim: int, out_dim: int, hidden_dim: int, num_layers: int = 2, act: Optional[str] = "relu"):
+    def __init__(self, in_dim: int, out_dim: int, hidden_dim: int, num_layers: int = 2, act: Optional[str] = "relu", dropout: float = 0.0):
         super().__init__()
-        self.layers = nn.ModuleList(
-            [nn.Linear(in_dim, hidden_dim), *([nn.Linear(hidden_dim, hidden_dim) for _ in range(num_layers - 2)]), nn.Linear(hidden_dim, out_dim)]
-        )
-        self.act = get_activation(act)
+
+        assert num_layers >= 1
+
+        activation = get_activation(act)
+
+        layers = []
+        dim = in_dim
+
+        # Hidden layers
+        for _ in range(num_layers - 1):
+            layers.append(nn.Linear(dim, hidden_dim))
+            if activation is not None:
+                layers.append(activation)
+            if dropout > 0:
+                layers.append(nn.Dropout(dropout))
+            dim = hidden_dim
+
+        # Final output layer
+        layers.append(nn.Linear(dim, out_dim))
+
+        self.net = nn.Sequential(*layers)
 
     def forward(self, x: torch.Tensor) -> torch.Tensor:
-        for layer in self.layers:
-            x = layer(x)
-            x = self.act(x)
-        return x
+        return self.net(x)
+
 
 
 class CrossTaskAttention(nn.Module):
