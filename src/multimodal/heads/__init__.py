@@ -1,4 +1,11 @@
-from multimodal.heads.basic import MultiTaskHead, MultiTaskLinearHead, MultiTaskMLPHead
+from multimodal.heads.basic import (
+    MultiTaskHead,
+    MultiTaskLinearHead,
+    MultiTaskLinearSliceHead,
+    MultiTaskMLPHead,
+    MultiTaskMLPSliceHead,
+    MultiTaskSliceHead,
+)
 from multimodal.heads.contrastive import (
     ModalityContrastiveHead,
     SupervisedContrastiveHead,
@@ -7,7 +14,10 @@ from multimodal.heads.contrastive import (
 __all__ = [
     "MultiTaskHead",
     "MultiTaskLinearHead",
+    "MultiTaskLinearSliceHead",
     "MultiTaskMLPHead",
+    "MultiTaskMLPSliceHead",
+    "MultiTaskSliceHead",
     "ModalityContrastiveHead",
     "SupervisedContrastiveHead",
 ]

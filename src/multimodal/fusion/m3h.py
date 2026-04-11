@@ -7,7 +7,7 @@ import torch
 from torch import nn
 import torch.nn.functional as F
 
-from src.multimodal.fusion.common_fusions import ConcatFusion
+from multimodal.fusion.common_fusions import ConcatFusion
 
 
 class M3HFusion(nn.Module):
@@ -84,7 +84,6 @@ class M3HFusion(nn.Module):
 
 if __name__ == "__main__":
     import torch
-    from src.multimodal.fusion.common_fusions import ConcatFusion
 
     base_fusion = ConcatFusion(dim=-1)
     m3h = M3HFusion(base_fusion, n_tasks=3, in_dim=75, attn_dim=32, alpha=1.0)
