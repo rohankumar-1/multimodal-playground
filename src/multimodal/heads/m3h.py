@@ -31,7 +31,7 @@ class M3HHead(nn.Module):
         self.WV = nn.Linear(attn_dim, attn_dim, bias=False)
         self.WT = nn.Linear(self.n_tasks, attn_dim, bias=False)
 
-        self.Ts = torch.arange(self.n_tasks).float()
+        self.Ts_onehot = F.one_hot(torch.arange(self.n_tasks, dtype=torch.long), num_classes=self.n_tasks).float()
         self.I_base = torch.eye(self.n_tasks)
 
         self.decoders = {task: nn.Linear(attn_dim, out_dims[task]) for task in out_dims.keys()}
@@ -41,8 +41,7 @@ class M3HHead(nn.Module):
         x = torch.einsum("b i, t o i -> b t o", x, self.proj_W)
         b, t, d = x.shape
 
-        Ts_onehot = F.one_hot(self.Ts, num_classes=t).float()
-        Qs = self.WQ(self.WT(Ts_onehot))
+        Qs = self.WQ(self.WT(self.Ts_onehot))
         Qs = Qs.unsqueeze(0).expand(b, t, d)
 
         Ks = self.WK(x)

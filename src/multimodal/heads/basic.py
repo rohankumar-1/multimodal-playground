@@ -4,7 +4,7 @@ import torch
 from torch import nn
 from torchvision.ops import MLP
 
-from multimodal.layers.utils import get_activation, get_norm
+from multimodal.utils import get_activation, get_norm
 
 
 class MultiTaskHead(nn.Module):

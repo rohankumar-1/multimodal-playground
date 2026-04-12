@@ -1,172 +1,146 @@
-"""Training utilities for multimodal models.
-
-**Supervised heads** (classification, regression, multi-task dict outputs): implement
-``loss_fn`` to compare ``predictions`` to targets carried in ``batch`` (e.g.
-``batch["labels"]`` or per-task keys).
-
-**Contrastive objectives** (no prediction tensor, or auxiliary to supervised): use
-``encoded`` from the same forward—per-modality embeddings before fusion—and add
-their loss inside ``loss_fn``. Example::
-
-    def loss_fn(model, batch, predictions, encoded):
-        task = F.cross_entropy(predictions, batch["labels"])
-        ctr = modality_contrastive(encoded)  # your head on encoded dict
-        return task + 0.1 * ctr, {"task": task.item(), "ctr": ctr.item()}
-
-``predictions`` may be unused if you train only on contrastive terms; still pass a
-dummy head or ignore the first return value.
-"""
-
-from __future__ import annotations
-
-from typing import Any, Callable, Dict, Iterable, Optional, Tuple, Union
+# trainer.py
+from dataclasses import dataclass
 
 import torch
-from torch import nn
-from torch.optim import Optimizer
+from torch.amp import GradScaler, autocast
 
-from multimodal.model import MultimodalModel
-
-LossFn = Callable[
-    [nn.Module, Dict[str, Any], Union[torch.Tensor, Dict[str, torch.Tensor]], Dict[str, torch.Tensor]],
-    Union[torch.Tensor, Tuple[torch.Tensor, Dict[str, float]]],
-]
+from multimodal.tasks import BaseTask
 
 
-def move_batch_to_device(batch: Dict[str, Any], device: torch.device) -> Dict[str, Any]:
-    """Move top-level tensor values in a batch dict to ``device`` (non-tensors unchanged)."""
-    out: Dict[str, Any] = {}
-    for k, v in batch.items():
-        if isinstance(v, torch.Tensor):
-            out[k] = v.to(device)
-        else:
-            out[k] = v
-    return out
+@dataclass
+class TrainerConfig:
+    max_epochs: int
+    grad_accum_steps: int = 1
+    mixed_precision: bool = True
+    log_every: int = 100
+    clip_grad_norm: float|None = None
+    device: str = "cuda"
 
 
-def _unpack_loss(out: Union[torch.Tensor, Tuple[torch.Tensor, Dict[str, float]]]) -> Tuple[torch.Tensor, Dict[str, float]]:
-    if isinstance(out, torch.Tensor):
-        return out, {}
-    loss, metrics = out
-    return loss, metrics
+class Trainer:
+    def __init__(
+        self,
+        model: torch.nn.Module,
+        tasks: list[BaseTask],
+        optimizer: torch.optim.Optimizer,
+        config: TrainerConfig
+    ):
+        self.model = model
+        self.tasks = tasks
+        self.optimizer = optimizer
+        self.config = config
 
+        self.scaler = GradScaler(enabled=config.mixed_precision)
 
-def train_step(
-    model: MultimodalModel,
-    batch: Dict[str, Any],
-    optimizer: Optimizer,
-    loss_fn: LossFn,
-    *,
-    max_grad_norm: Optional[float] = None,
-) -> Dict[str, float]:
-    """Single optimization step: forward (predictions + encoded), ``loss_fn``, backward.
+        self.model.to(config.device)
 
-    Returns metrics including ``loss`` and any keys returned by ``loss_fn``.
-    """
-    model.train()
-    optimizer.zero_grad(set_to_none=True)
-    predictions, encoded = model.forward_with_encoded(batch)
-    raw = loss_fn(model, batch, predictions, encoded)
-    loss, extra = _unpack_loss(raw)
-    loss.backward()
-    if max_grad_norm is not None:
-        torch.nn.utils.clip_grad_norm_(model.parameters(), max_grad_norm)
-    optimizer.step()
-    metrics: Dict[str, float] = {"loss": float(loss.detach())}
-    metrics.update({k: float(v) for k, v in extra.items()})
-    return metrics
+    # -----------------------------------------------------
+    # Public training loop
+    # -----------------------------------------------------
+    def train(self, train_loader, val_loader=None):
+        for epoch in range(self.config.max_epochs):
+            self.model.train()
+            print(f"\n===== Epoch {epoch+1}/{self.config.max_epochs} =====")
 
+            train_metrics = self._run_one_epoch(train_loader, train=True)
+            print(f"Train: {train_metrics}")
 
-@torch.no_grad()
-def eval_step(
-    model: MultimodalModel,
-    batch: Dict[str, Any],
-    loss_fn: LossFn,
-) -> Dict[str, float]:
-    """Evaluate ``loss_fn`` on one batch (no backward)."""
-    model.eval()
-    predictions, encoded = model.forward_with_encoded(batch)
-    raw = loss_fn(model, batch, predictions, encoded)
-    loss, extra = _unpack_loss(raw)
-    metrics: Dict[str, float] = {"loss": float(loss.detach())}
-    metrics.update({k: float(v) for k, v in extra.items()})
-    return metrics
+            if val_loader is not None:
+                self.model.eval()
+                with torch.no_grad():
+                    val_metrics = self._run_one_epoch(val_loader, train=False)
+                    print(f"Val:   {val_metrics}")
 
+    # -----------------------------------------------------
+    # One epoch pass (training or validation)
+    # -----------------------------------------------------
+    def _run_one_epoch(self, loader, train: bool):
+        running_metrics = {}
+        step = 0
 
-def train_epoch(
-    model: MultimodalModel,
-    data_loader: Iterable[Dict[str, Any]],
-    optimizer: Optimizer,
-    loss_fn: LossFn,
-    device: torch.device,
-    *,
-    max_grad_norm: Optional[float] = None,
-) -> Dict[str, float]:
-    """One pass over ``data_loader``; returns mean of each metric."""
-    totals: Dict[str, float] = {}
-    n = 0
-    for batch in data_loader:
-        batch = move_batch_to_device(batch, device)
-        metrics = train_step(
-            model, batch, optimizer, loss_fn, max_grad_norm=max_grad_norm
-        )
-        for k, v in metrics.items():
-            totals[k] = totals.get(k, 0.0) + v
-        n += 1
-    if n == 0:
-        return {}
-    return {k: totals[k] / n for k in totals}
+        self.optimizer.zero_grad(set_to_none=True)
 
+        for batch in loader:
+            batch = self._move_to_device(batch)
 
-@torch.no_grad()
-def evaluate(
-    model: MultimodalModel,
-    data_loader: Iterable[Dict[str, Any]],
-    loss_fn: LossFn,
-    device: torch.device,
-) -> Dict[str, float]:
-    """Aggregate ``eval_step`` metrics over the loader."""
-    totals: Dict[str, float] = {}
-    n = 0
-    for batch in data_loader:
-        batch = move_batch_to_device(batch, device)
-        metrics = eval_step(model, batch, loss_fn)
-        for k, v in metrics.items():
-            totals[k] = totals.get(k, 0.0) + v
-        n += 1
-    if n == 0:
-        return {}
-    return {k: totals[k] / n for k in totals}
+            if train:
+                metrics = self._train_step(batch, step)
+            else:
+                metrics = self._val_step(batch)
 
+            # aggregate metrics
+            for k, v in metrics.items():
+                running_metrics.setdefault(k, []).append(v)
 
-def train(
-    model: MultimodalModel,
-    train_loader: Iterable[Dict[str, Any]],
-    optimizer: Optimizer,
-    loss_fn: LossFn,
-    device: torch.device,
-    *,
-    num_epochs: int = 1,
-    val_loader: Optional[Iterable[Dict[str, Any]]] = None,
-    max_grad_norm: Optional[float] = None,
-    epoch_callback: Optional[Callable[[int, Dict[str, float], Optional[Dict[str, float]]], None]] = None,
-) -> None:
-    """Top-level training loop over ``num_epochs``.
+            step += 1
 
-    If ``val_loader`` is set, runs :func:`evaluate` after each epoch.
-    ``epoch_callback(epoch, train_metrics, val_metrics_or_none)`` is optional.
-    """
-    for epoch in range(num_epochs):
-        train_metrics = train_epoch(
-            model,
-            train_loader,
-            optimizer,
-            loss_fn,
-            device,
-            max_grad_norm=max_grad_norm,
-        )
-        val_metrics: Optional[Dict[str, float]] = None
-        if val_loader is not None:
-            val_metrics = evaluate(model, val_loader, loss_fn, device)
-        if epoch_callback is not None:
-            epoch_callback(epoch, train_metrics, val_metrics)
+        # mean-reduce the metrics
+        final_metrics = {
+            k: sum(vs) / len(vs)
+            for k, vs in running_metrics.items()
+        }
+        return final_metrics
+
+    # -----------------------------------------------------
+    # Training step
+    # -----------------------------------------------------
+    def _train_step(self, batch, step: int):
+        use_amp = self.config.mixed_precision
+
+        with autocast(device_type=self.config.device, enabled=use_amp):
+            preds, embs = self.model(batch)
+
+            p0 = next(self.model.parameters())
+            total_loss = torch.zeros((), device=p0.device, dtype=p0.dtype)
+            metrics: dict[str, float] = {}
+
+            for task in self.tasks:
+                task_loss, task_metrics = task.compute_loss(preds, embs, batch)
+                total_loss = total_loss + task_loss
+                metrics.update(task_metrics)
+
+        # backward + grad accumulation
+        accum_loss = total_loss / self.config.grad_accum_steps
+        self.scaler.scale(accum_loss).backward()
+
+        if (step + 1) % self.config.grad_accum_steps == 0:
+            if self.config.clip_grad_norm is not None:
+                self.scaler.unscale_(self.optimizer)
+                torch.nn.utils.clip_grad_norm_(
+                    self.model.parameters(),
+                    self.config.clip_grad_norm
+                )
+
+            self.scaler.step(self.optimizer)
+            self.scaler.update()
+            self.optimizer.zero_grad(set_to_none=True)
+
+        return metrics
+
+    # -----------------------------------------------------
+    # Validation step
+    # -----------------------------------------------------
+    def _val_step(self, batch):
+        preds, embs = self.model(batch)
+        metrics_out: dict[str, float] = {}
+
+        for task in self.tasks:
+            _, task_metrics = task.compute_loss(preds, embs, batch)
+            metrics_out.update(task_metrics)
+
+        return metrics_out
+
+    # -----------------------------------------------------
+    # Helper to move nested dict batches to device
+    # -----------------------------------------------------
+    def _move_to_device(self, batch):
+        device = self.config.device
+
+        if isinstance(batch, torch.Tensor):
+            return batch.to(device)
+        if isinstance(batch, dict):
+            return {k: self._move_to_device(v) for k, v in batch.items()}
+        if isinstance(batch, list):
+            return [self._move_to_device(v) for v in batch]
+        return batch
+

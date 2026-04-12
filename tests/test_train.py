@@ -1,62 +1,82 @@
-"""Smoke tests for training utilities."""
+"""Tests for :class:`multimodal.train.Trainer` and training config."""
+
+from __future__ import annotations
+
+from typing import cast
 
 import torch
 from torch import nn
 
 from multimodal.fusion import ConcatFusion
+from multimodal.heads import MultiTaskLinearHead
 from multimodal.model import MultimodalModel
-from multimodal.train import evaluate, move_batch_to_device, train_epoch, train_step
+from multimodal.tasks import BaseTask, ClassificationTask
+from multimodal.train import Trainer, TrainerConfig
 
 
-def test_move_batch_to_device() -> None:
-    batch = {"x": torch.zeros(2, 3), "meta": "keep"}
-    out = move_batch_to_device(batch, torch.device("cpu"))
-    assert out["meta"] == "keep"
-    assert out["x"].device.type == "cpu"
+class _ModelForTrainer(nn.Module):
+    """``Trainer`` expects ``preds, embs = model(batch)``; wrap :class:`MultimodalModel`."""
+
+    def __init__(self, inner: MultimodalModel) -> None:
+        super().__init__()
+        self.inner = inner
+
+    def forward(self, batch: dict) -> tuple[dict[str, torch.Tensor], dict[str, torch.Tensor]]:
+        preds, enc = self.inner.forward_with_encoded(batch)
+        assert isinstance(preds, dict) and isinstance(enc, dict)
+        return cast(dict[str, torch.Tensor], preds), cast(dict[str, torch.Tensor], enc)
 
 
-def test_train_step_supervised() -> None:
-    model = MultimodalModel(
+def _cpu_config(max_epochs: int = 1) -> TrainerConfig:
+    return TrainerConfig(
+        max_epochs=max_epochs,
+        grad_accum_steps=1,
+        mixed_precision=False,
+        device="cpu",
+    )
+
+
+def test_trainer_single_epoch_classification() -> None:
+    inner = MultimodalModel(
         {"v": nn.Linear(2, 4), "t": nn.Linear(2, 4)},
         ConcatFusion(dim=-1),
-        nn.Linear(8, 3),
-        fusion_modality_order=("v", "t"),
+        MultiTaskLinearHead(8, {"cls": 3}),
+        fusion_modality_order=["v", "t"],
     )
-    opt = torch.optim.SGD(model.parameters(), lr=0.1)
-
-    def loss_fn(model, batch, predictions, encoded):
-        assert encoded["v"].shape == (4, 4)
-        return torch.nn.functional.cross_entropy(predictions, batch["labels"]), {}
+    model = _ModelForTrainer(inner)
+    tasks: list[BaseTask] = [ClassificationTask("cls", "labels")]
+    opt = torch.optim.SGD(model.parameters(), lr=0.5)
+    trainer = Trainer(model, tasks, opt, _cpu_config(max_epochs=1))
 
     batch = {
-        "v": torch.randn(4, 2),
-        "t": torch.randn(4, 2),
-        "labels": torch.tensor([0, 1, 2, 1]),
+        "v": torch.randn(8, 2),
+        "t": torch.randn(8, 2),
+        "labels": torch.tensor([0, 1, 2, 0, 1, 2, 0, 1]),
     }
-    m0 = next(model.parameters()).detach().clone()
-    metrics = train_step(model, batch, opt, loss_fn)
-    assert "loss" in metrics
-    assert not torch.equal(next(model.parameters()), m0)
+    loader = [batch]
+
+    w0 = next(model.parameters()).detach().clone()
+    trainer.train(loader)
+    w1 = next(model.parameters()).detach().clone()
+    assert not torch.allclose(w0, w1)
 
 
-def test_train_epoch_and_evaluate() -> None:
-    model = MultimodalModel(
-        {"v": nn.Linear(1, 2)},
+def test_trainer_with_val_loader() -> None:
+    inner = MultimodalModel(
+        {"x": nn.Linear(3, 4)},
         ConcatFusion(dim=-1),
-        nn.Linear(2, 1),
-        fusion_modality_order=("v",),
+        MultiTaskLinearHead(4, {"cls": 2}),
+        fusion_modality_order=["x"],
     )
+    model = _ModelForTrainer(inner)
+    tasks: list[BaseTask] = [ClassificationTask("cls", "labels")]
     opt = torch.optim.SGD(model.parameters(), lr=0.01)
+    trainer = Trainer(model, tasks, opt, _cpu_config(max_epochs=1))
 
-    def loss_fn(model, batch, predictions, encoded):
-        return torch.nn.functional.mse_loss(predictions.squeeze(-1), batch["y"]), {"mse": 0.0}
-
-    loader = [
-        {"v": torch.randn(3, 1), "y": torch.randn(3)},
-        {"v": torch.randn(3, 1), "y": torch.randn(3)},
+    train_loader = [
+        {"x": torch.randn(4, 3), "labels": torch.tensor([0, 1, 0, 1])},
     ]
-    device = torch.device("cpu")
-    m = train_epoch(model, loader, opt, loss_fn, device)
-    assert "loss" in m
-    ev = evaluate(model, loader, loss_fn, device)
-    assert "loss" in ev
+    val_loader = [
+        {"x": torch.randn(4, 3), "labels": torch.tensor([1, 0, 1, 0])},
+    ]
+    trainer.train(train_loader, val_loader=val_loader)
