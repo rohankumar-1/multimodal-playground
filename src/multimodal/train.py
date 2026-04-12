@@ -1,5 +1,8 @@
 # trainer.py
+from __future__ import annotations
+
 from dataclasses import dataclass
+from pathlib import Path
 
 import torch
 from torch.amp import GradScaler, autocast
@@ -13,8 +16,14 @@ class TrainerConfig:
     grad_accum_steps: int = 1
     mixed_precision: bool = True
     log_every: int = 100
-    clip_grad_norm: float|None = None
+    clip_grad_norm: float | None = None
     device: str = "cuda"
+    #: If set, save ``torch.save`` checkpoints to this path whenever validation loss
+    #: hits a new minimum. Requires ``val_loader`` in :meth:`Trainer.train`.
+    checkpoint_path: str | None = None
+    #: Metric key in aggregated validation metrics to minimize (e.g. ``"cls/loss"``).
+    #: If ``None``, sums all values whose keys end with ``"/loss"`` (multi-task total).
+    checkpoint_monitor_key: str | None = None
 
 
 class Trainer:
@@ -34,10 +43,18 @@ class Trainer:
 
         self.model.to(config.device)
 
+        self._best_val_loss: float = float("inf")
+
     # -----------------------------------------------------
     # Public training loop
     # -----------------------------------------------------
     def train(self, train_loader, val_loader=None):
+        if self.config.checkpoint_path and val_loader is None:
+            raise ValueError(
+                "checkpoint_path is set but val_loader is None; "
+                "provide a validation loader to track validation loss."
+            )
+
         for epoch in range(self.config.max_epochs):
             self.model.train()
             print(f"\n===== Epoch {epoch+1}/{self.config.max_epochs} =====")
@@ -50,6 +67,21 @@ class Trainer:
                 with torch.no_grad():
                     val_metrics = self._run_one_epoch(val_loader, train=False)
                     print(f"Val:   {val_metrics}")
+
+                if self.config.checkpoint_path:
+                    val_loss = self._validation_loss_scalar(val_metrics)
+                    if val_loss < self._best_val_loss:
+                        self._best_val_loss = val_loss
+                        self._save_checkpoint(
+                            self.config.checkpoint_path,
+                            epoch=epoch,
+                            val_metrics=val_metrics,
+                            val_loss=val_loss,
+                        )
+                        print(
+                            f"Saved best checkpoint (val_loss={val_loss:.6f}) "
+                            f"-> {self.config.checkpoint_path}"
+                        )
 
     # -----------------------------------------------------
     # One epoch pass (training or validation)
@@ -143,4 +175,43 @@ class Trainer:
         if isinstance(batch, list):
             return [self._move_to_device(v) for v in batch]
         return batch
+
+    def _validation_loss_scalar(self, val_metrics: dict[str, float]) -> float:
+        """Single scalar to minimize for best-checkpoint selection."""
+        key = self.config.checkpoint_monitor_key
+        if key is not None:
+            if key not in val_metrics:
+                raise KeyError(
+                    f"checkpoint_monitor_key {key!r} not in val metrics: {sorted(val_metrics)}"
+                )
+            return float(val_metrics[key])
+
+        loss_keys = [k for k in val_metrics if k.endswith("/loss")]
+        if not loss_keys:
+            raise ValueError(
+                "No keys ending with '/loss' in val metrics; "
+                "set checkpoint_monitor_key on TrainerConfig to the metric to minimize."
+            )
+        return float(sum(val_metrics[k] for k in loss_keys))
+
+    def _save_checkpoint(
+        self,
+        path: str,
+        *,
+        epoch: int,
+        val_metrics: dict[str, float],
+        val_loss: float,
+    ) -> None:
+        out = Path(path)
+        out.parent.mkdir(parents=True, exist_ok=True)
+
+        payload = {
+            "epoch": epoch,
+            "best_val_loss": val_loss,
+            "val_metrics": val_metrics,
+            "model_state_dict": self.model.state_dict(),
+            "optimizer_state_dict": self.optimizer.state_dict(),
+            "scaler_state_dict": self.scaler.state_dict(),
+        }
+        torch.save(payload, out)
 
