@@ -1,6 +1,26 @@
 # Multimodal Multitask Playground
 
-This package implements commonly used blocks for multimodal and multitask learning. This is seperated out into encoders, decoders, fusion gates, task heads, and misc. The goal is to provide a modular and extensible framework.
+This package implements commonly used blocks for multimodal and multitask learning. It is separated into encoders, decoders, fusion gates, task heads, and misc. The goal is to provide a modular and extensible framework.
+
+Install (library only):
+
+```bash
+pip install -e .
+```
+
+Install with dev tools (pytest, ruff):
+
+```bash
+pip install -e ".[dev]"
+```
+
+Run tests from the repository root:
+
+```bash
+pytest
+```
+
+If imports fail, ensure the package is installed as above or run `PYTHONPATH=src pytest`.
 
 
 

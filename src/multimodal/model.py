@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from typing import Any, Dict, Optional, Sequence, Union
+from typing import Any
 
 import torch
 from torch import nn
@@ -35,10 +35,10 @@ class MultimodalModel(nn.Module):
 
     def __init__(
         self,
-        encoders: Dict[str, nn.Module],
+        encoders: dict[str, nn.Module|nn.Linear],
         fusion: nn.Module,
-        head: nn.Module,
-        fusion_modality_order: Optional[Sequence[str]] = None,
+        head: nn.Module|nn.Linear,
+        fusion_modality_order: list[str]|None = None,
     ) -> None:
         """Initialize a multimodal model.
 
@@ -62,15 +62,13 @@ class MultimodalModel(nn.Module):
             tuple(fusion_modality_order) if fusion_modality_order is not None else None
         )
 
-    def forward(self, batch: Dict[str, Any]) -> Union[torch.Tensor, Dict[str, torch.Tensor]]:
+    def forward(self, batch: dict[str, Any]) -> torch.Tensor|dict[str, torch.Tensor]:
         predictions, _ = self.forward_with_encoded(batch)
         return predictions
 
-    def forward_with_encoded(
-        self, batch: Dict[str, Any]
-    ) -> tuple[Union[torch.Tensor, Dict[str, torch.Tensor]], Dict[str, torch.Tensor]]:
+    def forward_with_encoded(self, batch: dict[str, Any]) -> tuple[torch.Tensor|dict[str, torch.Tensor], dict[str, torch.Tensor]]:
         """Run encoders and head; also return per-modality embeddings (for contrastive loss, etc.)."""
-        encoded: Dict[str, torch.Tensor] = {}
+        encoded: dict[str, torch.Tensor] = {}
         for name, encoder in self.encoders.items():
             if name not in batch:
                 raise KeyError(f"batch missing modality {name!r} required by encoders")
@@ -80,7 +78,7 @@ class MultimodalModel(nn.Module):
             if missing:
                 raise KeyError(f"encoded missing modalities required for fusion: {missing}")
             fused = self.fusion([encoded[k] for k in self.fusion_modality_order])
-        else:  
+        else:
             fused = self.fusion(encoded)
         predictions = self.head(fused)
         return predictions, encoded

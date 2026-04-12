@@ -1,7 +1,6 @@
 from __future__ import annotations
 
 from itertools import combinations
-from typing import Dict, List, Optional, Sequence, Tuple
 
 import torch
 import torch.nn.functional as F
@@ -56,14 +55,14 @@ class ModalityContrastiveHead(nn.Module):
 
     def __init__(
         self,
-        modality_dims: Dict[str, int],
+        modality_dims: dict[str, int],
         proj_dim: int,
-        groups: Sequence[Sequence[str]],
+        groups: list[list[str]],
         temperature: float = 0.07,
     ) -> None:
         super().__init__()
         self.temperature = temperature
-        self.groups: List[Tuple[str, ...]] = [tuple(g) for g in groups]
+        self.groups: list[tuple[str, ...]] = [tuple(g) for g in groups]
         for g in self.groups:
             if len(g) < 2:
                 raise ValueError(f"each group must have at least 2 modalities, got {g!r}")
@@ -75,14 +74,14 @@ class ModalityContrastiveHead(nn.Module):
             {name: nn.Linear(dim, proj_dim) for name, dim in modality_dims.items()}
         )
 
-    def forward(self, embeddings: Dict[str, torch.Tensor]) -> torch.Tensor:
-        projected: Dict[str, torch.Tensor] = {
+    def forward(self, embeddings: dict[str, torch.Tensor]) -> torch.Tensor:
+        projected: dict[str, torch.Tensor] = {
             name: F.normalize(self.projections[name](embeddings[name]), dim=-1)
             for name in self.projections
         }
-        losses: List[torch.Tensor] = []
+        losses: list[torch.Tensor] = []
         for group in self.groups:
-            pair_losses: List[torch.Tensor] = []
+            pair_losses: list[torch.Tensor] = []
             for a, b in combinations(group, 2):
                 if a not in projected or b not in projected:
                     raise KeyError(
@@ -100,7 +99,7 @@ class ModalityContrastiveHead(nn.Module):
 class SupervisedContrastiveHead(nn.Module):
     """Pull same-class embeddings together and push different-class ones apart."""
 
-    def __init__(self, input_dim: int, proj_dim: Optional[int] = None, temperature: float = 0.07) -> None:
+    def __init__(self, input_dim: int, proj_dim: int|None = None, temperature: float = 0.07) -> None:
         super().__init__()
         self.temperature = temperature
         self.proj: nn.Module
@@ -126,7 +125,7 @@ if __name__ == "__main__":
     head_m = ModalityContrastiveHead(
         modality_dims={"vision": 32, "text": 24, "audio": 16},
         proj_dim=16,
-        groups=[("vision", "text"), ("vision", "text", "audio")],
+        groups=[["vision", "text"], ["vision", "text", "audio"]],
     )
     emb = {
         "vision": torch.randn(b, 32),
@@ -141,7 +140,7 @@ if __name__ == "__main__":
         ModalityContrastiveHead(
             modality_dims={"a": 4, "b": 4},
             proj_dim=8,
-            groups=[("a",)],
+            groups=[["a"]],
         )
     except ValueError:
         pass

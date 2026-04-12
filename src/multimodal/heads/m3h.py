@@ -13,13 +13,11 @@ import torch
 import torch.nn.functional as F
 from torch import nn
 
-from typing import Dict, List
-
 
 class M3HHead(nn.Module):
     """Task-wise attention over a fused multimodal vector."""
 
-    def __init__(self, in_dim: int, attn_dim: int, out_dims: Dict[str, int], alpha: float = 1.0) -> None:
+    def __init__(self, in_dim: int, attn_dim: int, out_dims: dict[str, int], alpha: float = 1.0) -> None:
         super().__init__()
         self.proj_W = nn.Parameter(
             torch.randn(len(out_dims), attn_dim, in_dim) * (1 / in_dim**0.5)
@@ -33,18 +31,17 @@ class M3HHead(nn.Module):
         self.WV = nn.Linear(attn_dim, attn_dim, bias=False)
         self.WT = nn.Linear(self.n_tasks, attn_dim, bias=False)
 
-        Ts = torch.arange(self.n_tasks).float()
-        self.register_buffer("Ts", Ts)
-        self.register_buffer("I_base", torch.eye(self.n_tasks))
+        self.Ts = torch.arange(self.n_tasks).float()
+        self.I_base = torch.eye(self.n_tasks)
 
         self.decoders = {task: nn.Linear(attn_dim, out_dims[task]) for task in out_dims.keys()}
 
-    def forward(self, x: torch.Tensor) -> Dict[str, torch.Tensor]:
+    def forward(self, x: torch.Tensor) -> dict[str, torch.Tensor]:
         """Map fused features ``x`` of shape ``(B, in_dim)`` to ``(B, n_tasks, attn_dim)``."""
         x = torch.einsum("b i, t o i -> b t o", x, self.proj_W)
         b, t, d = x.shape
 
-        Ts_onehot = F.one_hot(self.Ts.long(), num_classes=t).float()
+        Ts_onehot = F.one_hot(self.Ts, num_classes=t).float()
         Qs = self.WQ(self.WT(Ts_onehot))
         Qs = Qs.unsqueeze(0).expand(b, t, d)
 
@@ -60,7 +57,10 @@ class M3HHead(nn.Module):
         Ws = F.softmax(logits, dim=-1)
 
         Os = torch.matmul(Ws, Vs)
-        return {task: decoder(Os[:, i, :]) for i, (task, decoder) in enumerate(self.decoders.items()    )}
+        return {
+            task: decoder(Os[:, i, :])
+            for i, (task, decoder) in enumerate(self.decoders.items())
+        }
 
 
 if __name__ == "__main__":
