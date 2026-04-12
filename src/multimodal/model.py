@@ -18,8 +18,8 @@ class MultimodalModel(nn.Module):
       ``encoders``.
     - **Fused** ``Tensor``: a single representation passed to the head.
 
-    Fusions that take a ``List[Tensor]`` (e.g. :class:`~multimodal.fusion.common_fusions.ConcatFusion`,
-    :class:`~multimodal.fusion.m3h.M3HFusion`) should be used with
+    Fusions that take a ``List[Tensor]`` (e.g. :class:`~multimodal.fusion.common_fusions.ConcatFusion`)
+    should be used with
     ``fusion_modality_order`` so the model stacks encoder outputs in a fixed order.
     Fusions that take a dict should leave ``fusion_modality_order`` unset and read
     ``encoded`` directly.
@@ -52,7 +52,7 @@ class MultimodalModel(nn.Module):
                 tensors (e.g. :class:`~multimodal.heads.basic.MultiTaskHead`).
             fusion_modality_order: Modality names in the order list-based fusion
                 modules expect (must match tensor layout assumptions such as
-                ``in_dim`` for :class:`~multimodal.fusion.m3h.M3HFusion`).
+                ``in_dim`` for :class:`~multimodal.heads.m3h.M3HHead`).
         """
         super().__init__()
         self.encoders = nn.ModuleDict(encoders)
@@ -80,7 +80,7 @@ class MultimodalModel(nn.Module):
             if missing:
                 raise KeyError(f"encoded missing modalities required for fusion: {missing}")
             fused = self.fusion([encoded[k] for k in self.fusion_modality_order])
-        else:
+        else:  
             fused = self.fusion(encoded)
         predictions = self.head(fused)
         return predictions, encoded

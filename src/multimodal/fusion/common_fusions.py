@@ -9,7 +9,6 @@ def add_bias(x: torch.Tensor) -> torch.Tensor:
     """Append a bias term (1) to the feature dimension."""
     return torch.cat([torch.ones(x.shape[0], 1), x], dim=1)
 
-
 class ConcatFusion(nn.Module):
     """Concatenate modality features along feature dimension."""
 
@@ -38,7 +37,7 @@ class AdditiveFusion(nn.Module):
 
 
 class MultiplicativeFusion(nn.Module):
-    """Fuse per-modality features into a single representation by multiplying them."""
+    """Fuse per-modality features into a single representation via bilinear product (y = x_1 A x_2^T + b)"""
 
     def __init__(self, dim: int) -> None:
         super().__init__()
@@ -50,6 +49,19 @@ class MultiplicativeFusion(nn.Module):
             fused = fused * x  # elementwise multiplication
         return fused
 
+
+class BilinearFusion(nn.Module):
+    """Fuse two feature vectors into a single representation via bilinear product (y = x_1 A x_2^T + b)"""
+
+    def __init__(self, x1_dim: int, x2_dim: int, out_dim: int) -> None:
+        super().__init__()
+        self.bilinear = nn.Bilinear(x1_dim, x2_dim, out_dim)
+        nn.init.xavier_uniform_(self.bilinear.weight)
+        if self.bilinear.bias is not None:
+            nn.init.zeros_(self.bilinear.bias)
+
+    def forward(self, x1: torch.Tensor, x2: torch.Tensor) -> torch.Tensor:
+        return self.bilinear(x1, x2)
 
 class TensorFusion(nn.Module):
     """Exact tensor fusion with optional output projection."""

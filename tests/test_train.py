@@ -42,8 +42,9 @@ def test_train_step_supervised() -> None:
 def test_train_epoch_and_evaluate() -> None:
     model = MultimodalModel(
         {"v": nn.Linear(1, 2)},
-        nn.Identity(),
+        ConcatFusion(dim=-1),
         nn.Linear(2, 1),
+        fusion_modality_order=("v",),
     )
     opt = torch.optim.SGD(model.parameters(), lr=0.01)
 

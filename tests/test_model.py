@@ -4,9 +4,9 @@ import pytest
 import torch
 from torch import nn
 
-from multimodal.fusion import ConcatFusion, M3HFusion
+from multimodal.fusion import ConcatFusion
+from multimodal.heads import M3HHead, MultiTaskLinearSliceHead
 from multimodal.model import MultimodalModel
-from multimodal.heads import MultiTaskLinearSliceHead
 
 
 def test_multimodal_model_concat_fusion_list_via_order() -> None:
@@ -21,38 +21,28 @@ def test_multimodal_model_concat_fusion_list_via_order() -> None:
 
 def test_multimodal_model_m3h_slice_head() -> None:
     d_v, d_t = 6, 7
-    in_dim = d_v + d_t
-    n_tasks = 2
+    embed_dim = 8
+    in_dim = embed_dim * 2
+    out_dims = {"v": 3, "t": 1}
     attn_dim = 16
-    enc = {"v": nn.Linear(d_v, 8), "t": nn.Linear(d_t, 8)}
-    inner = M3HFusion(
-        ConcatFusion(dim=-1),
-        in_dim=in_dim,
-        n_tasks=n_tasks,
-        attn_dim=attn_dim,
-        alpha=1.0,
-    )
-    head = MultiTaskLinearSliceHead(
-        feat_dim=attn_dim,
-        out_dims={"a": 3, "b": 1},
-        tasks=["a", "b"],
-    )
+    enc = {"v": nn.Linear(d_v, embed_dim), "t": nn.Linear(d_t, embed_dim)}
+    fusion = ConcatFusion(dim=-1)
+    head = M3HHead(in_dim=in_dim, attn_dim=attn_dim, out_dims=out_dims, alpha=1.0)
     model = MultimodalModel(
-        enc,
-        inner,
-        head,
+        encoders=enc,
+        fusion=fusion,
+        head=head,
         fusion_modality_order=("v", "t"),
     )
     batch = {"v": torch.randn(4, d_v), "t": torch.randn(4, d_t)}
     out = model(batch)
-    assert set(out.keys()) == {"a", "b"}
-    assert out["a"].shape == (4, 3)
-    assert out["b"].shape == (4, 1)
+    assert out['v'].shape == (4, 3)
+    assert out['t'].shape == (4, 1)
 
 
 def test_multimodal_model_missing_modality_raises() -> None:
     model = MultimodalModel(
-        {"v": nn.Linear(2, 2), "t": nn.Linear(2, 2)},
+        {"v": nn.Identity(), "t": nn.Identity()},
         ConcatFusion(dim=-1),
         nn.Identity(),
         fusion_modality_order=("v", "t"),

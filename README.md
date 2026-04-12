@@ -12,3 +12,4 @@ We can abstract any multimodal model into the following components:
 
 In this package, we make assumptions about user-implemented modules. Each encoder's forward method accepts a tensor (the modality), and outputs a tensor (the embedding). The fusion module's forward method accepts a (consistently ordered) list of tensors (the embeddings), and outputs a tensor(s) (the fused representation(s)). The head's forward method accepts a tensor (the fused representation), and outputs a tensor (the task-specific output).
 
+Encoders accept (B, input_dim...) and output (B, latent_dim). The fusion layer accepts a list of tensors of shapes [(B, input_dim_i), (B, input_dim_j), ...] and outputs a tensor of shape (B, fusion_dim). The head's forward method accepts a tensor of shape (B, fusion_dim) and outputs a tensor of shape (B, output_dim).

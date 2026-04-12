@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Example: two modalities, M3H fusion producing (B, T, F), slice linear heads per task.
+"""Example: concat fusion + M3H head + per-task linear decoders.
 
 Run from the repo root with the package on the path::
 
@@ -15,8 +15,8 @@ from __future__ import annotations
 import torch
 from torch import nn
 
-from multimodal.fusion import ConcatFusion, M3HFusion
-from multimodal.heads import MultiTaskLinearSliceHead
+from multimodal.fusion import ConcatFusion
+from multimodal.heads import M3HHead, MultiTaskLinearSliceHead
 from multimodal.model import MultimodalModel
 
 
@@ -33,21 +33,18 @@ def main() -> None:
         "vision": nn.Sequential(nn.Linear(d_v, embed_dim), nn.ReLU()),
         "text": nn.Sequential(nn.Linear(d_t, embed_dim), nn.ReLU()),
     }
-    m3h = M3HFusion(
-        ConcatFusion(dim=-1),
-        in_dim=in_dim,
-        n_tasks=n_tasks,
-        attn_dim=attn_dim,
-        alpha=1.0,
-    )
-    head = MultiTaskLinearSliceHead(
-        feat_dim=attn_dim,
-        out_dims={"sentiment": 3, "topic": 10},
-        tasks=["sentiment", "topic"],
+    fusion = ConcatFusion(dim=-1)
+    head = nn.Sequential(
+        M3HHead(in_dim=in_dim, n_tasks=n_tasks, attn_dim=attn_dim, alpha=1.0),
+        MultiTaskLinearSliceHead(
+            feat_dim=attn_dim,
+            out_dims={"sentiment": 3, "topic": 10},
+            tasks=["sentiment", "topic"],
+        ),
     )
     model = MultimodalModel(
         encoders,
-        m3h,
+        fusion,
         head,
         fusion_modality_order=("vision", "text"),
     )

@@ -1,17 +1,17 @@
 from multimodal.fusion.common_fusions import (
     AdditiveFusion,
+    BilinearFusion,
     ConcatFusion,
     LowRankTensorFusion,
     MultiplicativeFusion,
     TensorFusion,
 )
-from multimodal.fusion.m3h import M3HFusion
 
 __all__ = [
     "AdditiveFusion",
-    "LowRankTensorFusion",
+    "BilinearFusion",
     "ConcatFusion",
+    "LowRankTensorFusion",
     "MultiplicativeFusion",
     "TensorFusion",
-    "M3HFusion",
-]
+]   
