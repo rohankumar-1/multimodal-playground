@@ -7,6 +7,7 @@ from pathlib import Path
 import torch
 from torch.amp import GradScaler, autocast
 
+from multimodal.model import MultimodalModel
 from multimodal.tasks import BaseTask
 
 
@@ -29,11 +30,11 @@ class TrainerConfig:
 class Trainer:
     def __init__(
         self,
-        model: torch.nn.Module,
+        model: MultimodalModel,
         tasks: list[BaseTask],
         optimizer: torch.optim.Optimizer,
-        config: TrainerConfig
-    ):
+        config: TrainerConfig,
+    ) -> None:
         self.model = model
         self.tasks = tasks
         self.optimizer = optimizer
@@ -120,7 +121,7 @@ class Trainer:
         use_amp = self.config.mixed_precision
 
         with autocast(device_type=self.config.device, enabled=use_amp):
-            preds, embs = self.model(batch)
+            preds, embs = self.model.predict(batch)
 
             p0 = next(self.model.parameters())
             total_loss = torch.zeros((), device=p0.device, dtype=p0.dtype)
@@ -153,7 +154,7 @@ class Trainer:
     # Validation step
     # -----------------------------------------------------
     def _val_step(self, batch):
-        preds, embs = self.model(batch)
+        preds, embs = self.model.predict(batch)
         metrics_out: dict[str, float] = {}
 
         for task in self.tasks:

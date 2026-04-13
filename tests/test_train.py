@@ -3,7 +3,6 @@
 from __future__ import annotations
 
 from pathlib import Path
-from typing import cast
 
 import pytest
 import torch
@@ -16,19 +15,6 @@ from multimodal.tasks import BaseTask, ClassificationTask
 from multimodal.train import Trainer, TrainerConfig
 
 
-class _ModelForTrainer(nn.Module):
-    """``Trainer`` expects ``preds, embs = model(batch)``; wrap :class:`MultimodalModel`."""
-
-    def __init__(self, inner: MultimodalModel) -> None:
-        super().__init__()
-        self.inner = inner
-
-    def forward(self, batch: dict) -> tuple[dict[str, torch.Tensor], dict[str, torch.Tensor]]:
-        preds, enc = self.inner.forward_with_encoded(batch)
-        assert isinstance(preds, dict) and isinstance(enc, dict)
-        return cast(dict[str, torch.Tensor], preds), cast(dict[str, torch.Tensor], enc)
-
-
 def _cpu_config(max_epochs: int = 1) -> TrainerConfig:
     return TrainerConfig(
         max_epochs=max_epochs,
@@ -39,13 +25,12 @@ def _cpu_config(max_epochs: int = 1) -> TrainerConfig:
 
 
 def test_trainer_single_epoch_classification() -> None:
-    inner = MultimodalModel(
+    model = MultimodalModel(
         {"v": nn.Linear(2, 4), "t": nn.Linear(2, 4)},
         ConcatFusion(dim=-1),
         MultiTaskLinearHead(8, {"cls": 3}),
         fusion_modality_order=["v", "t"],
     )
-    model = _ModelForTrainer(inner)
     tasks: list[BaseTask] = [ClassificationTask("cls", "labels")]
     opt = torch.optim.SGD(model.parameters(), lr=0.5)
     trainer = Trainer(model, tasks, opt, _cpu_config(max_epochs=1))
@@ -64,13 +49,12 @@ def test_trainer_single_epoch_classification() -> None:
 
 
 def test_trainer_with_val_loader() -> None:
-    inner = MultimodalModel(
+    model = MultimodalModel(
         {"x": nn.Linear(3, 4)},
         ConcatFusion(dim=-1),
         MultiTaskLinearHead(4, {"cls": 2}),
         fusion_modality_order=["x"],
     )
-    model = _ModelForTrainer(inner)
     tasks: list[BaseTask] = [ClassificationTask("cls", "labels")]
     opt = torch.optim.SGD(model.parameters(), lr=0.01)
     trainer = Trainer(model, tasks, opt, _cpu_config(max_epochs=1))
@@ -85,13 +69,12 @@ def test_trainer_with_val_loader() -> None:
 
 
 def test_trainer_checkpoint_requires_val_loader() -> None:
-    inner = MultimodalModel(
+    model = MultimodalModel(
         {"x": nn.Linear(1, 2)},
         ConcatFusion(dim=-1),
         MultiTaskLinearHead(2, {"cls": 2}),
         fusion_modality_order=["x"],
     )
-    model = _ModelForTrainer(inner)
     tasks: list[BaseTask] = [ClassificationTask("cls", "labels")]
     opt = torch.optim.SGD(model.parameters(), lr=0.01)
     cfg = TrainerConfig(
@@ -108,13 +91,12 @@ def test_trainer_checkpoint_requires_val_loader() -> None:
 
 def test_trainer_saves_checkpoint_on_val(tmp_path: Path) -> None:
     ckpt = tmp_path / "best.pt"
-    inner = MultimodalModel(
+    model = MultimodalModel(
         {"x": nn.Linear(3, 4)},
         ConcatFusion(dim=-1),
         MultiTaskLinearHead(4, {"cls": 2}),
         fusion_modality_order=["x"],
     )
-    model = _ModelForTrainer(inner)
     tasks: list[BaseTask] = [ClassificationTask("cls", "labels")]
     opt = torch.optim.SGD(model.parameters(), lr=0.01)
     cfg = TrainerConfig(

@@ -1,8 +1,8 @@
 [project]
-name = "playground"
+name = "multimodal-playground"
 version = "0.1.0"
 description = "Blocks for multimodal and multitask learning."
-readme = "README.md"
+readme = "README.md" 
 requires-python = ">=3.10"
 license = { text = "MIT" }
 keywords = ["multimodal", "multitask", "pytorch", "deep-learning"]

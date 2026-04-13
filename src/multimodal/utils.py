@@ -1,4 +1,4 @@
-from typing import Optional
+from __future__ import annotations
 
 import torch
 import torch.nn.functional as F
@@ -50,7 +50,7 @@ def multiclass_dice_loss(logits, targets, eps=1e-6):
         apply_sigmoid=False,
     )
 
-def get_norm(norm: Optional[str] = None, num_channels: int = 64, dim: int = 2) -> Optional[nn.Module]:
+def get_norm(norm: str | None = None, num_channels: int = 64, dim: int = 2) -> nn.Module | None:
     """
     norm: string or None
     dim: 1, 2, or 3  (spatial dimensionality)

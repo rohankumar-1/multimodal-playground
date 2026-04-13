@@ -1,5 +1,7 @@
 """Tests for MultimodalModel."""
 
+from typing import cast
+
 import pytest
 import torch
 from torch import nn
@@ -9,7 +11,21 @@ from multimodal.heads import M3HHead
 from multimodal.model import MultimodalModel
 
 
-def test_multimodal_model_concat_fusion_list_via_order() -> None:
+def test_multimodal_model_forward_returns_embeddings() -> None:
+    model = MultimodalModel(
+        encoders={"v": nn.Linear(4, 8), "t": nn.Linear(3, 8)},
+        fusion=ConcatFusion(dim=-1),
+        head=nn.Linear(16, 2),
+        fusion_modality_order=["v", "t"],
+    )
+    batch = {"v": torch.randn(5, 4), "t": torch.randn(5, 3)}
+    embs = model(batch)
+    assert set(embs.keys()) == {"v", "t"}
+    assert embs["v"].shape == (5, 8)
+    assert embs["t"].shape == (5, 8)
+
+
+def test_multimodal_model_predict_returns_logits_and_embeddings() -> None:
     fusion = ConcatFusion(dim=-1)
     head = nn.Linear(16, 2)
     model = MultimodalModel(
@@ -22,11 +38,13 @@ def test_multimodal_model_concat_fusion_list_via_order() -> None:
         "v": torch.randn(5, 4),
         "t": torch.randn(5, 3),
     }
-    out = model(batch)
-    assert out.shape == (5, 2)
+    preds, embs = model.predict(batch)
+    assert isinstance(preds, torch.Tensor)
+    assert preds.shape == (5, 2)
+    assert set(embs.keys()) == {"v", "t"}
 
 
-def test_multimodal_model_m3h_slice_head() -> None:
+def test_multimodal_model_m3h_head() -> None:
     d_v, d_t = 6, 7
     embed_dim = 8
     in_dim = embed_dim * 2
@@ -41,9 +59,11 @@ def test_multimodal_model_m3h_slice_head() -> None:
         fusion_modality_order=["v", "t"],
     )
     batch = {"v": torch.randn(4, d_v), "t": torch.randn(4, d_t)}
-    out = model(batch)
-    assert out['v'].shape == (4, 3)
-    assert out['t'].shape == (4, 1)
+    preds, embs = model.predict(batch)
+    preds_dict = cast(dict[str, torch.Tensor], preds)
+    assert preds_dict["v"].shape == (4, 3)
+    assert preds_dict["t"].shape == (4, 1)
+    assert embs["v"].shape == (4, embed_dim)
 
 
 def test_multimodal_model_missing_modality_raises() -> None:
@@ -65,4 +85,4 @@ def test_multimodal_model_fusion_order_missing_encoded_raises() -> None:
         fusion_modality_order=["v", "t", "audio"],
     )
     with pytest.raises(KeyError, match="encoded missing"):
-        model({"v": torch.randn(1, 1), "t": torch.randn(1, 1)})
+        model.predict({"v": torch.randn(1, 1), "t": torch.randn(1, 1)})

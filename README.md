@@ -1,8 +1,8 @@
-# Multimodal Multitask Playground
+# Multimodal Playground
 
-This package implements commonly used blocks for multimodal and multitask learning. It is separated into encoders, decoders, fusion gates, task heads, and misc. The goal is to provide a modular and extensible framework.
+This package attempts to standardize multimodal learning. It provides a modular and extensible interface between encoders, fusion gates, and task heads, with a consistent API.
 
-Install (library only):
+## Installation
 
 ```bash
 pip install -e .
@@ -22,14 +22,77 @@ pytest
 
 If imports fail, ensure the package is installed as above or run `PYTHONPATH=src pytest`.
 
+## Example usage
 
+- **`model(batch)`** / **`model.forward(batch)`** returns **per-modality embeddings** (`dict[str, Tensor]`).
+- **`model.predict(batch)`** returns **`(predictions, embeddings)`** (fusion + head, then encoders).
+- **`Trainer`** calls **`model.predict(batch)`** internally, so you can pass a **`MultimodalModel`** with no wrapper.
+
+```python
+import torch
+from torch import nn
+
+from multimodal.fusion import ConcatFusion
+from multimodal.heads import MultiTaskLinearHead
+from multimodal.model import MultimodalModel
+from multimodal.tasks import ClassificationTask
+from multimodal.train import Trainer, TrainerConfig
+
+
+embed_dim = 32
+n_classes = 3
+fused_dim = embed_dim * 2
+
+model = MultimodalModel(
+    encoders={
+        "vision": nn.Linear(10, embed_dim),
+        "text": nn.Linear(8, embed_dim),
+    },
+    fusion=ConcatFusion(dim=-1),
+    head=MultiTaskLinearHead(fused_dim, {"cls": n_classes}),
+    fusion_modality_order=["vision", "text"],
+)
+
+batch = {
+    "vision": torch.randn(16, 10),
+    "text": torch.randn(16, 8),
+    "labels": torch.randint(0, n_classes, (16,)),
+}
+
+embs = model(batch)  # encoder outputs only
+preds, embs = model.predict(batch)  # logits + embeddings
+
+tasks = [ClassificationTask("cls", "labels")]
+optimizer = torch.optim.Adam(model.parameters(), lr=1e-3)
+config = TrainerConfig(
+    max_epochs=2,
+    grad_accum_steps=1,
+    mixed_precision=False,
+    device="cpu",
+)
+trainer = Trainer(model, tasks, optimizer, config)
+
+train_loader = [batch]
+val_loader = [
+    {
+        "vision": torch.randn(8, 10),
+        "text": torch.randn(8, 8),
+        "labels": torch.randint(0, n_classes, (8,)),
+    },
+]
+trainer.train(train_loader, val_loader=val_loader)
+```
+
+For GPU training, set `device="cuda"` and `mixed_precision=True` in `TrainerConfig` (requires a CUDA device).
+
+## Overview
 
 We can abstract any multimodal model into the following components:
 
-1. **Encoders**: each modality is encoded into a feature vector (embedding)
-2. **Fusion** (optional): a method to fuse the feature vectors into a single (or multiple) representations
-3. **Heads/Decoders**: uses fused representation(s) to produce task-specific outputs
+1. **Encoders**: each modality is encoded into a feature vector (embedding).
+2. **Fusion** (optional): a method to fuse the feature vectors into a single (or multiple) representations.
+3. **Heads / decoders**: map fused representation(s) to task-specific outputs.
 
-In this package, we make assumptions about user-implemented modules. Each encoder's forward method accepts a tensor (the modality), and outputs a tensor (the embedding). The fusion module's forward method accepts a (consistently ordered) list of tensors (the embeddings), and outputs a tensor(s) (the fused representation(s)). The head's forward method accepts a tensor (the fused representation), and outputs a tensor (the task-specific output).
+In this package, each encoder maps a modality tensor to an embedding. **`MultimodalModel.forward`** returns those embeddings as a dict. **`MultimodalModel.predict`** runs fusion and the head and returns `(predictions, embeddings)`. List-input fusions use `fusion_modality_order` so modalities are concatenated (or fused) in a fixed order.
 
-Encoders accept (B, input_dim...) and output (B, latent_dim). The fusion layer accepts a list of tensors of shapes [(B, input_dim_i), (B, input_dim_j), ...] and outputs a tensor of shape (B, fusion_dim). The head's forward method accepts a tensor of shape (B, fusion_dim) and outputs a tensor of shape (B, output_dim).
+Encoders output `(B, latent_dim)` per modality. Fusion yields `(B, fusion_dim)`; the head maps that to task outputs.

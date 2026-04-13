@@ -53,9 +53,10 @@ def main() -> None:
         "vision": torch.randn(batch_size, d_v),
         "text": torch.randn(batch_size, d_t),
     }
-    out = model(batch)
-    print("sentiment logits:", out["sentiment"].shape)
-    print("topic logits:", out["topic"].shape)
+    preds, embs = model.predict(batch)
+    print("sentiment logits:", preds["sentiment"].shape)
+    print("topic logits:", preds["topic"].shape)
+    print("vision embeddings:", embs["vision"].shape)
 
 
 if __name__ == "__main__":

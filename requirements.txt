@@ -1,0 +1,9 @@
+# Runtime dependencies — kept in sync with [project.dependencies] in pyproject.toml.
+# Prefer installing the project itself (pulls these in): pip install -e .
+#
+# Standalone use (e.g. Docker layer without the full repo as a package):
+#   pip install -r requirements.txt
+
+numpy>=1.22
+torch>=2.0
+torchvision>=0.15
