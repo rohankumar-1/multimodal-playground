@@ -120,3 +120,74 @@ def test_trainer_saves_checkpoint_on_val(tmp_path: Path) -> None:
     assert "model_state_dict" in data
     assert "best_val_loss" in data
     assert "cls/loss" in data["val_metrics"]
+
+
+def test_trainer_freeze_encoder_modalities() -> None:
+    model = MultimodalModel(
+        {"v": nn.Linear(2, 4), "t": nn.Linear(2, 4)},
+        ConcatFusion(dim=-1),
+        MultiTaskLinearHead(8, {"cls": 3}),
+        fusion_modality_order=["v", "t"],
+    )
+    cfg = TrainerConfig(
+        max_epochs=1,
+        grad_accum_steps=1,
+        mixed_precision=False,
+        device="cpu",
+        freeze_encoder_modalities=("v",),
+    )
+    Trainer(
+        model,
+        [ClassificationTask("cls", "labels")],
+        torch.optim.SGD(model.parameters(), lr=0.1),
+        cfg,
+    )
+    assert all(not p.requires_grad for p in model.encoders["v"].parameters())
+    assert all(p.requires_grad for p in model.encoders["t"].parameters())
+
+
+def test_trainer_freeze_all_encoders() -> None:
+    model = MultimodalModel(
+        {"a": nn.Linear(1, 2), "b": nn.Linear(1, 2)},
+        ConcatFusion(dim=-1),
+        MultiTaskLinearHead(4, {"cls": 2}),
+        fusion_modality_order=["a", "b"],
+    )
+    cfg = TrainerConfig(
+        max_epochs=1,
+        grad_accum_steps=1,
+        mixed_precision=False,
+        device="cpu",
+        freeze_all_encoders=True,
+    )
+    Trainer(
+        model,
+        [ClassificationTask("cls", "labels")],
+        torch.optim.SGD(model.parameters(), lr=0.1),
+        cfg,
+    )
+    assert all(not p.requires_grad for p in model.encoders["a"].parameters())
+    assert all(not p.requires_grad for p in model.encoders["b"].parameters())
+
+
+def test_trainer_freeze_unknown_modality_raises() -> None:
+    model = MultimodalModel(
+        {"v": nn.Linear(2, 2)},
+        ConcatFusion(dim=-1),
+        MultiTaskLinearHead(2, {"cls": 2}),
+        fusion_modality_order=["v"],
+    )
+    cfg = TrainerConfig(
+        max_epochs=1,
+        grad_accum_steps=1,
+        mixed_precision=False,
+        device="cpu",
+        freeze_encoder_modalities=("not_a_modality",),
+    )
+    with pytest.raises(KeyError, match="unknown modality"):
+        Trainer(
+            model,
+            [ClassificationTask("cls", "labels")],
+            torch.optim.SGD(model.parameters(), lr=0.1),
+            cfg,
+        )

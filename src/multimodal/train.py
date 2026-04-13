@@ -25,6 +25,12 @@ class TrainerConfig:
     #: Metric key in aggregated validation metrics to minimize (e.g. ``"cls/loss"``).
     #: If ``None``, sums all values whose keys end with ``"/loss"`` (multi-task total).
     checkpoint_monitor_key: str | None = None
+    #: If True, set ``requires_grad=False`` on every encoder in :attr:`MultimodalModel.encoders`.
+    #: When True, :attr:`freeze_encoder_modalities` is ignored.
+    freeze_all_encoders: bool = False
+    #: Freeze only these encoder keys (must exist on the model). Ignored if
+    #: :attr:`freeze_all_encoders` is True.
+    freeze_encoder_modalities: tuple[str, ...] = ()
 
 
 class Trainer:
@@ -44,7 +50,28 @@ class Trainer:
 
         self.model.to(config.device)
 
+        self._apply_encoder_freezing()
+
         self._best_val_loss: float = float("inf")
+
+    def _apply_encoder_freezing(self) -> None:
+        cfg = self.config
+        enc = self.model.encoders
+
+        if cfg.freeze_all_encoders:
+            for mod in enc.values():
+                for p in mod.parameters():
+                    p.requires_grad = False
+            return
+
+        for name in cfg.freeze_encoder_modalities:
+            if name not in enc:
+                raise KeyError(
+                    f"freeze_encoder_modalities: unknown modality {name!r}; "
+                    f"available: {sorted(enc.keys())}"
+                )
+            for p in enc[name].parameters():
+                p.requires_grad = False
 
     # -----------------------------------------------------
     # Public training loop
@@ -121,7 +148,7 @@ class Trainer:
         use_amp = self.config.mixed_precision
 
         with autocast(device_type=self.config.device, enabled=use_amp):
-            preds, embs = self.model.predict(batch)
+            preds, embs = self.model(batch)
 
             p0 = next(self.model.parameters())
             total_loss = torch.zeros((), device=p0.device, dtype=p0.dtype)
@@ -154,7 +181,7 @@ class Trainer:
     # Validation step
     # -----------------------------------------------------
     def _val_step(self, batch):
-        preds, embs = self.model.predict(batch)
+        preds, embs = self.model(batch)
         metrics_out: dict[str, float] = {}
 
         for task in self.tasks:

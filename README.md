@@ -24,9 +24,9 @@ If imports fail, ensure the package is installed as above or run `PYTHONPATH=src
 
 ## Example usage
 
-- **`model(batch)`** / **`model.forward(batch)`** returns **per-modality embeddings** (`dict[str, Tensor]`).
-- **`model.predict(batch)`** returns **`(predictions, embeddings)`** (fusion + head, then encoders).
-- **`Trainer`** calls **`model.predict(batch)`** internally, so you can pass a **`MultimodalModel`** with no wrapper.
+- **`model(batch)`** / **`forward(batch)`** returns **`(predictions, modality_embeddings)`**.
+- **`model.predict(batch)`** returns **predictions only** (one full forward pass; embeddings are dropped).
+- **`Trainer`** calls **`model(batch)`** and uses both outputs for task losses.
 
 ```python
 import torch
@@ -40,7 +40,7 @@ from multimodal.train import Trainer, TrainerConfig
 
 
 embed_dim = 32
-n_classes = 3
+n_sentiment, n_topic = 3, 10  # two classification heads
 fused_dim = embed_dim * 2
 
 model = MultimodalModel(
@@ -49,20 +49,31 @@ model = MultimodalModel(
         "text": nn.Linear(8, embed_dim),
     },
     fusion=ConcatFusion(dim=-1),
-    head=MultiTaskLinearHead(fused_dim, {"cls": n_classes}),
+    head=MultiTaskLinearHead(
+        fused_dim,
+        {"sentiment": n_sentiment, "topic": n_topic},
+    ),
     fusion_modality_order=["vision", "text"],
 )
 
 batch = {
     "vision": torch.randn(16, 10),
     "text": torch.randn(16, 8),
-    "labels": torch.randint(0, n_classes, (16,)),
+    "sentiment_y": torch.randint(0, n_sentiment, (16,)),
+    "topic_y": torch.randint(0, n_topic, (16,)),
 }
 
-embs = model(batch)  # encoder outputs only
-preds, embs = model.predict(batch)  # logits + embeddings
+preds, embs = model(batch)
+assert preds["sentiment"].shape == (16, n_sentiment)
+assert preds["topic"].shape == (16, n_topic)
 
-tasks = [ClassificationTask("cls", "labels")]
+logits_only = model.predict(batch)  # dict with the same two keys, no embeddings
+
+tasks = [
+    ClassificationTask("sentiment", "sentiment_y"),
+    ClassificationTask("topic", "topic_y"),
+]
+
 optimizer = torch.optim.Adam(model.parameters(), lr=1e-3)
 config = TrainerConfig(
     max_epochs=2,
@@ -77,13 +88,37 @@ val_loader = [
     {
         "vision": torch.randn(8, 10),
         "text": torch.randn(8, 8),
-        "labels": torch.randint(0, n_classes, (8,)),
+        "sentiment_y": torch.randint(0, n_sentiment, (8,)),
+        "topic_y": torch.randint(0, n_topic, (8,)),
     },
 ]
 trainer.train(train_loader, val_loader=val_loader)
 ```
 
 For GPU training, set `device="cuda"` and `mixed_precision=True` in `TrainerConfig` (requires a CUDA device).
+
+### Freezing encoders (`TrainerConfig`)
+
+The trainer can freeze encoder weights when it is constructed (after `model.to(device)`):
+
+- **`freeze_all_encoders=True`** — sets `requires_grad=False` on every submodule in `model.encoders`.
+- **`freeze_encoder_modalities=("vision",)`** — freeze only the listed names (must match keys in `model.encoders`). Ignored if `freeze_all_encoders` is True.
+
+```python
+config = TrainerConfig(
+    max_epochs=2,
+    grad_accum_steps=1,
+    mixed_precision=False,
+    device="cpu",
+    freeze_encoder_modalities=("vision",),  # train `text` encoder + fusion + head
+    # freeze_all_encoders=True,  # alternative: freeze every encoder
+)
+trainer = Trainer(model, tasks, optimizer, config)
+```
+
+Optimizers created with `model.parameters()` still work: frozen parameters get no gradient and are not updated. To **exclude** frozen tensors from the optimizer entirely, use `filter(lambda p: p.requires_grad, model.parameters())`.
+
+You can still freeze manually before building the trainer if you prefer not to use these flags.
 
 ## Overview
 
@@ -93,6 +128,6 @@ We can abstract any multimodal model into the following components:
 2. **Fusion** (optional): a method to fuse the feature vectors into a single (or multiple) representations.
 3. **Heads / decoders**: map fused representation(s) to task-specific outputs.
 
-In this package, each encoder maps a modality tensor to an embedding. **`MultimodalModel.forward`** returns those embeddings as a dict. **`MultimodalModel.predict`** runs fusion and the head and returns `(predictions, embeddings)`. List-input fusions use `fusion_modality_order` so modalities are concatenated (or fused) in a fixed order.
+In this package, each encoder maps a modality tensor to an embedding. **`MultimodalModel.forward`** runs encode → fuse → head and returns **`(predictions, embeddings)`**. **`MultimodalModel.predict`** returns only predictions. List-input fusions use `fusion_modality_order` so modalities are concatenated (or fused) in a fixed order.
 
 Encoders output `(B, latent_dim)` per modality. Fusion yields `(B, fusion_dim)`; the head maps that to task outputs.

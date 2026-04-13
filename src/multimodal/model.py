@@ -13,18 +13,13 @@ class MultimodalModel(nn.Module):
 
     - **Batch** ``Dict[str, Any]``: one entry per modality name. Values are tensors
       consumed by the matching encoder.
-    - **Forward** returns **per-modality embeddings** ``Dict[str, Tensor]`` (encoder
-      outputs). Use :meth:`predict` for fusion + head outputs.
-    - **Fused** ``Tensor``: produced inside :meth:`predict` from embeddings.
+    - **Forward** (``model(batch)``) returns ``(predictions, modality_embeddings)``:
+      full encode → fuse → head, plus the encoder outputs as a dict.
+    - **Predict** returns **only** predictions (same forward pass, embeddings discarded).
 
     List-based fusions (e.g. :class:`~multimodal.fusion.common_fusions.ConcatFusion`)
     use ``fusion_modality_order`` so modality tensors are stacked in a fixed order.
     Dict-based fusions leave ``fusion_modality_order`` unset.
-
-    **Training**
-
-    :meth:`predict` returns ``(predictions, embeddings)`` so trainers can consume both
-    without a wrapper module.
     """
 
     def __init__(
@@ -52,14 +47,18 @@ class MultimodalModel(nn.Module):
             tuple(fusion_modality_order) if fusion_modality_order is not None else None
         )
 
-    def forward(self, batch: dict[str, Any]) -> dict[str, torch.Tensor]:
-        """Return per-modality embeddings (encoder outputs only)."""
+    def forward(
+        self, batch: dict[str, Any]
+    ) -> tuple[torch.Tensor | dict[str, torch.Tensor], dict[str, torch.Tensor]]:
+        """Encode, fuse, apply head. Returns ``(predictions, per_modality_embeddings)``."""
         encoded: dict[str, torch.Tensor] = {}
         for name, encoder in self.encoders.items():
             if name not in batch:
                 raise KeyError(f"batch missing modality {name!r} required by encoders")
             encoded[name] = encoder(batch[name])
-        return encoded
+        fused = self._fuse(encoded)
+        predictions = self.head(fused)
+        return predictions, encoded
 
     def _fuse(self, encoded: dict[str, torch.Tensor]) -> torch.Tensor:
         if self.fusion_modality_order is not None:
@@ -69,11 +68,17 @@ class MultimodalModel(nn.Module):
             return self.fusion([encoded[k] for k in self.fusion_modality_order])
         return self.fusion(encoded)
 
-    def predict(
-        self, batch: dict[str, Any]
-    ) -> tuple[torch.Tensor | dict[str, torch.Tensor], dict[str, torch.Tensor]]:
-        """Encode, fuse, and apply the head. Returns ``(predictions, modality_embeddings)``."""
-        encoded = self.forward(batch)
-        fused = self._fuse(encoded)
-        predictions = self.head(fused)
-        return predictions, encoded
+    def predict(self, batch: dict[str, Any]) -> torch.Tensor | dict[str, torch.Tensor]:
+        """Return predictions only (inference-style API; runs one full forward pass)."""
+        predictions, _ = self.forward(batch)
+        return predictions
+
+    def encode(self, batch: dict[str, Any]) -> dict[str, torch.Tensor]:
+        """Encode the batch. Returns ``per_modality_embeddings``."""
+        encoded: dict[str, torch.Tensor] = {}
+        for name, encoder in self.encoders.items():
+            if name not in batch:
+                raise KeyError(f"batch missing modality {name!r} required by encoders")
+            encoded[name] = encoder(batch[name])
+        return encoded
+
