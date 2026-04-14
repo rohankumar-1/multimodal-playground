@@ -6,6 +6,7 @@ from dataclasses import dataclass
 from pathlib import Path
 
 import torch
+from torch import nn
 from torch.amp import GradScaler, autocast
 from torch.nn.parallel import DistributedDataParallel
 
@@ -18,7 +19,6 @@ from multimodal.distributed import (
     is_main_process,
     reduce_mean_dict,
 )
-from multimodal.model import MultimodalModel
 from multimodal.tasks import BaseTask
 
 
@@ -36,7 +36,7 @@ class TrainerConfig:
     #: Metric key in aggregated validation metrics to minimize (e.g. ``"cls/loss"``).
     #: If ``None``, sums all values whose keys end with ``"/loss"`` (multi-task total).
     checkpoint_monitor_key: str | None = None
-    #: If True, set ``requires_grad=False`` on every encoder in :attr:`MultimodalModel.encoders`.
+    #: If True, set ``requires_grad=False`` on every submodule in ``model.encoders``.
     #: When True, :attr:`freeze_encoder_modalities` is ignored.
     freeze_all_encoders: bool = False
     #: Freeze only these encoder keys (must exist on the model). Ignored if
@@ -58,7 +58,7 @@ class TrainerConfig:
 class Trainer:
     def __init__(
         self,
-        model: MultimodalModel,
+        model: nn.Module,
         tasks: list[BaseTask],
         optimizer: torch.optim.Optimizer,
         config: TrainerConfig,
@@ -133,7 +133,7 @@ class Trainer:
             return torch.device(f"cuda:{self._local_rank}")
         return torch.device(device_str)
 
-    def _unwrap_model(self) -> MultimodalModel:
+    def _unwrap_model(self) -> nn.Module:
         if isinstance(self.model, DistributedDataParallel):
             return self.model.module
         return self._raw_model
@@ -143,18 +143,18 @@ class Trainer:
         enc = self._raw_model.encoders
 
         if cfg.freeze_all_encoders:
-            for mod in enc.values():
+            for mod in enc.values():  # ty:ignore[call-non-callable]
                 for p in mod.parameters():
                     p.requires_grad = False
             return
 
         for name in cfg.freeze_encoder_modalities:
-            if name not in enc:
+            if name not in enc:  # ty:ignore[unsupported-operator]
                 raise KeyError(
                     f"freeze_encoder_modalities: unknown modality {name!r}; "
-                    f"available: {sorted(enc.keys())}"
+                    f"available: {sorted(enc.keys())}"  # ty:ignore[unresolved-attribute, call-non-callable]
                 )
-            for p in enc[name].parameters():
+            for p in enc[name].parameters():  # ty:ignore[unresolved-attribute, invalid-argument-type, not-subscriptable]
                 p.requires_grad = False
 
     def _maybe_warn_non_distributed_sampler(self, loader, *, train: bool) -> None:

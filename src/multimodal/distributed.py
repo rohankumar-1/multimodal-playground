@@ -115,7 +115,10 @@ def wrap_loader_with_distributed_sampler(
     from torch.utils.data import DataLoader
     from torch.utils.data.distributed import DistributedSampler
 
-    if loader.batch_sampler is not None:
+    # DataLoader always constructs a BatchSampler internally when batch_size is set.
+    # We only reject the *custom* batch_sampler case (user passed batch_sampler=...),
+    # which is indicated by batch_size and sampler being unset.
+    if loader.batch_size is None and loader.sampler is None:
         raise ValueError(
             "wrap_loader_with_distributed_sampler does not support DataLoader(batch_sampler=...)"
         )

@@ -21,6 +21,7 @@ def _cpu_config(max_epochs: int = 1) -> TrainerConfig:
         grad_accum_steps=1,
         mixed_precision=False,
         device="cpu",
+        progress_bar=False,
     )
 
 
@@ -105,6 +106,7 @@ def test_trainer_saves_checkpoint_on_val(tmp_path: Path) -> None:
         mixed_precision=False,
         device="cpu",
         checkpoint_path=str(ckpt),
+        progress_bar=False,
     )
     trainer = Trainer(model, tasks, opt, cfg)
 
@@ -135,6 +137,7 @@ def test_trainer_freeze_encoder_modalities() -> None:
         mixed_precision=False,
         device="cpu",
         freeze_encoder_modalities=("v",),
+        progress_bar=False,
     )
     Trainer(
         model,
@@ -159,6 +162,7 @@ def test_trainer_freeze_all_encoders() -> None:
         mixed_precision=False,
         device="cpu",
         freeze_all_encoders=True,
+        progress_bar=False,
     )
     Trainer(
         model,
@@ -183,6 +187,7 @@ def test_trainer_freeze_unknown_modality_raises() -> None:
         mixed_precision=False,
         device="cpu",
         freeze_encoder_modalities=("not_a_modality",),
+        progress_bar=False,
     )
     with pytest.raises(KeyError, match="unknown modality"):
         Trainer(
@@ -191,3 +196,26 @@ def test_trainer_freeze_unknown_modality_raises() -> None:
             torch.optim.SGD(model.parameters(), lr=0.1),
             cfg,
         )
+
+
+def test_trainer_format_metrics_precision() -> None:
+    model = MultimodalModel(
+        {"x": nn.Linear(1, 2)},
+        ConcatFusion(dim=-1),
+        MultiTaskLinearHead(2, {"cls": 2}),
+        fusion_modality_order=["x"],
+    )
+    tasks: list[BaseTask] = [ClassificationTask("cls", "labels")]
+    opt = torch.optim.SGD(model.parameters(), lr=0.01)
+    cfg = TrainerConfig(
+        max_epochs=1,
+        grad_accum_steps=1,
+        mixed_precision=False,
+        device="cpu",
+        metric_precision=2,
+        progress_bar=False,
+    )
+    trainer = Trainer(model, tasks, opt, cfg)
+    s = trainer._format_metrics({"a": 1.23456, "b": 9.0})
+    assert "a=1.23" in s
+    assert "b=9.00" in s

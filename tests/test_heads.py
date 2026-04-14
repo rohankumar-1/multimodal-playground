@@ -6,6 +6,7 @@ import torch
 from multimodal.heads import (
     MultiTaskLinearHead,
     MultiTaskLinearSliceHead,
+    NoOpHead,
 )
 
 
@@ -35,3 +36,10 @@ def test_slice_head_wrong_task_dim_raises() -> None:
     head = MultiTaskLinearSliceHead(4, {"a": 1, "b": 1})
     with pytest.raises(ValueError, match="task dimension"):
         head(torch.randn(3, 3, 4))
+
+
+def test_noop_head_returns_empty_dict_and_has_no_params() -> None:
+    head = NoOpHead()
+    out = head(torch.randn(2, 5))
+    assert out == {}
+    assert sum(p.numel() for p in head.parameters()) == 0
