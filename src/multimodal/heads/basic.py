@@ -42,6 +42,20 @@ except Exception:  # pragma: no cover
 from multimodal.utils import get_activation, get_norm
 
 
+class NoOpHead(nn.Module):
+    """Ignore fused features and return no supervised predictions.
+
+    Use when training is driven only by per-modality encoder outputs in ``embs``
+    (for example :class:`~multimodal.tasks.ContrastiveTask` with
+    :func:`~multimodal.utils.clip_loss`). :class:`~multimodal.model.MultimodalModel`
+    still runs fusion and this head so the forward API stays unchanged; this module has
+    no parameters and does not contribute to the loss.
+    """
+
+    def forward(self, _fused: torch.Tensor) -> dict[str, torch.Tensor]:
+        return {}
+
+
 class MultiTaskHead(nn.Module):
     """ Maps a single fused representation to task outputs. Outputs can be logits, reconstructions, etc. """
     def __init__(self, input_dim: int, decoders: dict[str, nn.Module], **kwargs) -> None:

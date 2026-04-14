@@ -27,6 +27,7 @@ from torchvision import transforms
 from torchvision.datasets import FashionMNIST
 
 from multimodal.fusion import ConcatFusion
+from multimodal.heads import NoOpHead
 from multimodal.model import MultimodalModel
 from multimodal.tasks import ContrastiveTask
 from multimodal.train import Trainer, TrainerConfig
@@ -123,13 +124,6 @@ class TextEncoder(nn.Module):
         return self.fc(h)
 
 
-class NoOpHead(nn.Module):
-    """Consumes fused features but does not define a supervised loss (contrastive only)."""
-
-    def forward(self, x: torch.Tensor) -> dict[str, torch.Tensor]:
-        return {}
-
-
 def data_root() -> Path:
     base = os.environ.get("MULTIMODAL_DATA", tempfile.gettempdir())
     return Path(base) / "multimodal_examples"
@@ -157,7 +151,7 @@ def main() -> None:
     fusion = ConcatFusion(dim=-1)
     head = NoOpHead()
     model = MultimodalModel(
-        encoders,  # ty:ignore[invalid-argument-type]
+        encoders,
         fusion,
         head,
         fusion_modality_order=["image", "text"],
@@ -175,7 +169,7 @@ def main() -> None:
         metric_precision=4,
         progress_bar=True,
     )
-    trainer = Trainer(model, tasks, optimizer, config)  # ty:ignore[invalid-argument-type]
+    trainer = Trainer(model, tasks, optimizer, config)
     print(f"Data root: {root} | device={device} | contrastive on encoder embeddings only")
     trainer.train(train_loader, val_loader)
 
