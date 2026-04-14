@@ -2,7 +2,42 @@ from __future__ import annotations
 
 import torch
 from torch import nn
-from torchvision.ops import MLP
+
+try:
+    from torchvision.ops import MLP  # noqa: W291
+except Exception:  # pragma: no cover
+    class MLP(nn.Module):
+        def __init__(
+            self,
+            *,
+            in_channels: int,
+            hidden_channels: list[int],
+            activation_layer=None,
+            dropout: float = 0.0,
+            norm_layer=None,
+        ) -> None:
+            super().__init__()
+            layers: list[nn.Module] = []
+            prev = in_channels
+            if activation_layer is None:
+                act: nn.Module = nn.ReLU()
+            elif isinstance(activation_layer, type):
+                act = activation_layer()
+            else:
+                act = activation_layer
+
+            # Minimal fallback implementation (no torchvision dependency).
+            # Note: `norm_layer` is accepted for API-compat but not applied here.
+            for h in hidden_channels:
+                layers.append(nn.Linear(prev, h))
+                layers.append(act)
+                if dropout and dropout > 0:
+                    layers.append(nn.Dropout(dropout))
+                prev = h
+            self.net = nn.Sequential(*layers)
+
+        def forward(self, x: torch.Tensor) -> torch.Tensor:
+            return self.net(x)
 
 from multimodal.utils import get_activation, get_norm
 

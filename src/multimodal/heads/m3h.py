@@ -2,9 +2,9 @@
 
 Expects a **single fused** tensor of shape ``(B, in_dim)`` (e.g. output of
 :class:`~multimodal.fusion.common_fusions.ConcatFusion` on modality embeddings).
-Returns per-task representations ``(B, n_tasks, attn_dim)``, typically followed by
-:class:`~multimodal.heads.basic.MultiTaskLinearSliceHead` inside an
-:class:`torch.nn.Sequential`.
+Returns a dict of per-task logits (linear decoders on the attended features). You can
+instead stack intermediate features and use :class:`~multimodal.heads.basic.MultiTaskLinearSliceHead`
+if you build a custom head that emits ``(B, n_tasks, attn_dim)``.
 """
 
 from __future__ import annotations
@@ -31,13 +31,21 @@ class M3HHead(nn.Module):
         self.WV = nn.Linear(attn_dim, attn_dim, bias=False)
         self.WT = nn.Linear(self.n_tasks, attn_dim, bias=False)
 
-        self.Ts_onehot = F.one_hot(torch.arange(self.n_tasks, dtype=torch.long), num_classes=self.n_tasks).float()
-        self.I_base = torch.eye(self.n_tasks)
+        self.register_buffer(
+            "Ts_onehot",
+            F.one_hot(
+                torch.arange(self.n_tasks, dtype=torch.long),
+                num_classes=self.n_tasks,
+            ).float(),
+        )
+        self.register_buffer("I_base", torch.eye(self.n_tasks))
 
-        self.decoders = {task: nn.Linear(attn_dim, out_dims[task]) for task in out_dims.keys()}
+        self.decoders = nn.ModuleDict(
+            {task: nn.Linear(attn_dim, out_dims[task]) for task in out_dims.keys()}
+        )
 
     def forward(self, x: torch.Tensor) -> dict[str, torch.Tensor]:
-        """Map fused features ``x`` of shape ``(B, in_dim)`` to ``(B, n_tasks, attn_dim)``."""
+        """Map fused ``x`` of shape ``(B, in_dim)`` to per-task logits."""
         x = torch.einsum("b i, t o i -> b t o", x, self.proj_W)
         b, t, d = x.shape
 
@@ -51,7 +59,7 @@ class M3HHead(nn.Module):
         Ms_max = Ms.max(dim=2, keepdim=True)[0].max(dim=1, keepdim=True)[0]
         Ms_norm = Ms / (Ms_max + 1e-8)
 
-        Is = self.I_base.unsqueeze(0).expand(b, t, t)
+        Is = self.I_base.unsqueeze(0).expand(b, t, t)  # ty:ignore[call-non-callable]
         logits = Is + self.alpha * Ms_norm
         Ws = F.softmax(logits, dim=-1)
 
