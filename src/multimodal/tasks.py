@@ -7,7 +7,14 @@ import torch
 import torch.nn.functional as F
 from torch import nn
 
-from multimodal.losses import InfoNCE, SupConLoss, dice_bce_loss, dice_loss, multiclass_dice_loss
+from multimodal.losses import (
+    CLUB,
+    InfoNCE,
+    SupConLoss,
+    dice_bce_loss,
+    dice_loss,
+    multiclass_dice_loss,
+)
 
 
 class BaseTask:
@@ -190,6 +197,138 @@ class SupervisedContrastiveTask(BaseTask):
         loss = self.loss_module(z, labels)
         metrics = {f"{self.name}/loss": loss.item()}
         return loss * self.weight, metrics
+
+
+class FactorCLSupervisedTask(BaseTask):
+    """FactorCL-style supervised objective with conditional and MI-penalty terms.
+
+    Implements the flow described by the user:
+
+    - z1, z2 are taken from ``embs`` (typically encoder outputs, optionally projected)
+    - y_emb = label_embed(y)
+    - InfoNCE terms:
+      - shared: InfoNCE(z1, z2)
+      - x1y:    InfoNCE(z1, y_emb)
+      - x2y:    InfoNCE(z2, y_emb)
+      - cond:   InfoNCE([z1,y_emb], [z2,y_emb])
+    - CLUB penalties:
+      - club:      CLUB(z1, z2)
+      - club_cond: CLUB([z1,y_emb], [z2,y_emb])
+    - total: L_total = sum(InfoNCE terms) - club_lambda * sum(CLUB terms)
+    """
+
+    def __init__(
+        self,
+        name: str,
+        x1_key: str,
+        x2_key: str,
+        label_key: str,
+        *,
+        num_classes: int,
+        embed_dim: int,
+        temperature: float = 0.07,
+        club_hidden: int = 256,
+        club_lambda: float = 1.0,
+        weight: float = 1.0,
+        normalize_inputs_for_club: bool = True,
+    ) -> None:
+        super().__init__(name, weight)
+        if num_classes <= 0:
+            raise ValueError("num_classes must be positive")
+        if embed_dim <= 0:
+            raise ValueError("embed_dim must be positive")
+
+        self.x1_key = x1_key
+        self.x2_key = x2_key
+        self.label_key = label_key
+
+        self.label_embed = nn.Embedding(num_classes, embed_dim)
+        self.infonce = InfoNCE(temperature=temperature, symmetric=True)
+
+        self.club = CLUB(embed_dim, embed_dim, hidden=club_hidden)
+        self.club_cond = CLUB(embed_dim * 2, embed_dim * 2, hidden=club_hidden)
+        self.club_lambda = float(club_lambda)
+        self.normalize_inputs_for_club = bool(normalize_inputs_for_club)
+
+    def trainable_loss_modules(self) -> tuple[nn.Module, ...]:
+        return (self.label_embed, self.infonce, self.club, self.club_cond)
+
+    def compute_loss(self, preds, embs, batch):
+        if self.x1_key not in embs:
+            raise KeyError(f"{self.__class__.__name__}: embs missing x1_key {self.x1_key!r}")
+        if self.x2_key not in embs:
+            raise KeyError(f"{self.__class__.__name__}: embs missing x2_key {self.x2_key!r}")
+        if self.label_key not in batch:
+            raise KeyError(
+                f"{self.__class__.__name__}: batch missing label_key {self.label_key!r}"
+            )
+
+        z1 = embs[self.x1_key]
+        z2 = embs[self.x2_key]
+        if z1.dim() != 2 or z2.dim() != 2:
+            raise ValueError(
+                f"{self.__class__.__name__}: z1/z2 must be [B, D]; "
+                f"got {tuple(z1.shape)} and {tuple(z2.shape)}"
+            )
+        if z1.shape[0] != z2.shape[0]:
+            raise ValueError(
+                f"{self.__class__.__name__}: z1 and z2 must share batch dim; "
+                f"got {z1.shape[0]} and {z2.shape[0]}"
+            )
+        if z1.shape[1] != z2.shape[1]:
+            raise ValueError(
+                f"{self.__class__.__name__}: z1 and z2 must share embed dim; "
+                f"got {z1.shape[1]} and {z2.shape[1]}"
+            )
+        if z1.shape[1] != self.label_embed.embedding_dim:
+            raise ValueError(
+                f"{self.__class__.__name__}: embs dim {z1.shape[1]} must match "
+                f"label_embed dim {self.label_embed.embedding_dim}"
+            )
+
+        y = batch[self.label_key].view(-1).long()
+        if y.shape[0] != z1.shape[0]:
+            raise ValueError(
+                f"{self.__class__.__name__}: labels must have shape [B]; got {tuple(y.shape)} "
+                f"for B={z1.shape[0]}"
+            )
+        y_emb = self.label_embed(y)
+
+        # InfoNCE terms (InfoNCE normalizes internally).
+        l_shared = self.infonce(z1, z2)
+        l_x1y = self.infonce(z1, y_emb)
+        l_x2y = self.infonce(z2, y_emb)
+
+        z1_cond = torch.cat([z1, y_emb], dim=-1)
+        z2_cond = torch.cat([z2, y_emb], dim=-1)
+        l_cond = self.infonce(z1_cond, z2_cond)
+
+        # CLUB penalties (optionally normalize first to match the user's flow).
+        if self.normalize_inputs_for_club:
+            z1c = F.normalize(z1, dim=-1)
+            z2c = F.normalize(z2, dim=-1)
+            z1cc = F.normalize(z1_cond, dim=-1)
+            z2cc = F.normalize(z2_cond, dim=-1)
+        else:
+            z1c, z2c, z1cc, z2cc = z1, z2, z1_cond, z2_cond
+
+        l_club = self.club(z1c, z2c)
+        l_club_cond = self.club_cond(z1cc, z2cc)
+
+        total = l_shared + l_x1y + l_x2y + l_cond - self.club_lambda * (
+            l_club + l_club_cond
+        )
+
+        metrics = {
+            f"{self.name}/loss": float(total.detach().item()),
+            f"{self.name}/shared": float(l_shared.detach().item()),
+            f"{self.name}/x1y": float(l_x1y.detach().item()),
+            f"{self.name}/x2y": float(l_x2y.detach().item()),
+            f"{self.name}/cond": float(l_cond.detach().item()),
+            f"{self.name}/club": float(l_club.detach().item()),
+            f"{self.name}/club_cond": float(l_club_cond.detach().item()),
+        }
+        return total * self.weight, metrics
 
 
 class ReconstructionTask(BaseTask):

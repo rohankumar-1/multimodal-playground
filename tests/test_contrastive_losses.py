@@ -11,7 +11,7 @@ from multimodal.losses import (
     SupConLoss,
     clip_loss,
 )
-from multimodal.tasks import ContrastiveTask, SupervisedContrastiveTask
+from multimodal.tasks import ContrastiveTask, FactorCLSupervisedTask, SupervisedContrastiveTask
 
 
 def test_clip_loss_matches_infonce() -> None:
@@ -59,3 +59,28 @@ def test_critic_infonce_with_separable_critic() -> None:
     y = torch.randn(b, d2)
     loss = loss_mod(x, y)
     assert loss.ndim == 0
+
+
+def test_factorcl_supervised_task_finite_and_metrics() -> None:
+    b, d, ncls = 8, 16, 5
+    embs = {
+        "x1": torch.randn(b, d, requires_grad=True),
+        "x2": torch.randn(b, d, requires_grad=True),
+    }
+    batch = {"y": torch.randint(0, ncls, (b,))}
+    task = FactorCLSupervisedTask(
+        "fac",
+        "x1",
+        "x2",
+        "y",
+        num_classes=ncls,
+        embed_dim=d,
+        temperature=0.1,
+        club_lambda=0.5,
+    )
+    loss, metrics = task.compute_loss({}, embs, batch)
+    assert loss.ndim == 0
+    assert torch.isfinite(loss)
+    assert "fac/loss" in metrics
+    assert "fac/shared" in metrics
+    assert "fac/club_cond" in metrics
