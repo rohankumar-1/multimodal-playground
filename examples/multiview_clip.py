@@ -37,7 +37,7 @@ if str(_EXAMPLES) not in sys.path:
 from multimodal.losses import CriticInfoNCE, SeparableCritic
 from multimodal.model import ContrastiveModel
 from multimodal.tasks import ContrastiveTask
-from multimodal.train import Trainer, TrainerConfig
+from multimodal.train import Trainer, TrainerConfig, iter_training_parameters
 
 from fashion_mnist_shared import (
     CharTokenizer,
@@ -95,10 +95,7 @@ def main() -> None:
     device = "cuda" if torch.cuda.is_available() else "cpu"
     use_amp = device == "cuda"
 
-    optimizer = torch.optim.Adam(
-        list(model.parameters()) + list(cross_loss.parameters()),
-        lr=3e-4,
-    )
+    optimizer = torch.optim.Adam(iter_training_parameters(model, tasks), lr=3e-4)
     config = TrainerConfig(
         max_epochs=3,
         device=device,

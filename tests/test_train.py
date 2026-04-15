@@ -11,8 +11,8 @@ from torch import nn
 from multimodal.fusion import ConcatFusion
 from multimodal.heads import MultiTaskLinearHead
 from multimodal.model import MultimodalModel
-from multimodal.tasks import BaseTask, ClassificationTask
-from multimodal.train import Trainer, TrainerConfig
+from multimodal.tasks import BaseTask, ClassificationTask, ContrastiveTask
+from multimodal.train import Trainer, TrainerConfig, iter_training_parameters
 
 
 def _cpu_config(max_epochs: int = 1) -> TrainerConfig:
@@ -219,3 +219,41 @@ def test_trainer_format_metrics_precision() -> None:
     s = trainer._format_metrics({"a": 1.23456, "b": 9.0})
     assert "a=1.23" in s
     assert "b=9.00" in s
+
+
+def test_iter_training_parameters_includes_contrastive_loss_module() -> None:
+    from multimodal.losses import CriticInfoNCE, SeparableCritic
+
+    model = nn.Linear(4, 4)
+    loss_mod = CriticInfoNCE(SeparableCritic(4, 4, proj_dim=8), temperature=0.1)
+    tasks = [ContrastiveTask("c", "a", "b", loss_fn=loss_mod)]
+    params = list(iter_training_parameters(model, tasks))
+    loss_ids = {id(p) for p in loss_mod.parameters()}
+    assert loss_ids <= {id(p) for p in params}
+    n_lin = sum(1 for _ in model.parameters())
+    n_crit = sum(1 for _ in loss_mod.parameters())
+    assert len(params) == n_lin + n_crit
+
+
+def test_iter_training_parameters_dedupes_when_task_module_is_submodule_of_model() -> None:
+    class Toy(nn.Module):
+        def __init__(self) -> None:
+            super().__init__()
+            self.shared = nn.Linear(2, 2)
+            self.head = nn.Linear(2, 1)
+
+    class SharingTask(BaseTask):
+        def __init__(self, mod: nn.Module) -> None:
+            super().__init__("s")
+            self._mod = mod
+
+        def trainable_loss_modules(self) -> tuple[nn.Module, ...]:
+            return (self._mod,)
+
+        def compute_loss(self, preds, embs, batch):
+            return torch.tensor(0.0), {}
+
+    m = Toy()
+    tasks = [SharingTask(m.shared)]
+    params = list(iter_training_parameters(m, tasks))
+    assert len(params) == len(list(m.parameters()))
