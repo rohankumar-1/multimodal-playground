@@ -15,6 +15,16 @@ class BaseTask:
         self.name = name
         self.weight = weight
 
+    def trainable_loss_modules(self) -> tuple[nn.Module, ...]:
+        """Extra :class:`~torch.nn.Module` objects whose parameters should train with the model.
+
+        Used with :func:`~multimodal.train.iter_training_parameters` when building the
+        optimizer. Override in tasks that keep a stateful loss (e.g. critic InfoNCE).
+        Modules already registered as submodules of ``model`` need not be listed; parameters
+        are deduplicated by identity.
+        """
+        return ()
+
     @abstractmethod
     def compute_loss(self, preds, embs, batch) -> tuple[torch.Tensor, dict[str, float]]:
         pass
@@ -96,8 +106,9 @@ class ContrastiveTask(BaseTask):
     InfoNCE, asymmetric temperature, custom logits), pass an ``nn.Module`` or callable as
     ``loss_fn``; it is invoked as ``loss_fn(embs[mod1], embs[mod2])``. That keeps the task
     thin and avoids a growing matrix of constructor flags; trainable auxiliaries (e.g. a
-    bilinear critic) live on ``loss_fn`` and should be included in the optimizer (see trainer
-    docs / future ``auxiliary_modules``-style API).
+    bilinear critic) live on ``loss_fn``. Pass :func:`~multimodal.train.iter_training_parameters`
+    ``(model, tasks, …)`` into your optimizer so those weights are updated (see
+    :meth:`trainable_loss_modules`).
 
     **Possible evolution.** A small factory (e.g. ``loss="infonce" | "critic"`` plus shared
     kwargs) could wrap the same ``loss_fn`` slot for discoverability, as long as advanced
@@ -123,6 +134,11 @@ class ContrastiveTask(BaseTask):
             )
         else:
             self.loss_fn = loss_fn
+
+    def trainable_loss_modules(self) -> tuple[nn.Module, ...]:
+        if isinstance(self.loss_fn, nn.Module):
+            return (self.loss_fn,)
+        return ()
 
     def compute_loss(self, preds, embs, batch):
         z1 = embs[self.mod1]
@@ -158,6 +174,9 @@ class SupervisedContrastiveTask(BaseTask):
         self.loss_module = (
             loss_module if loss_module is not None else SupConLoss(temperature=temperature)
         )
+
+    def trainable_loss_modules(self) -> tuple[nn.Module, ...]:
+        return (self.loss_module,)
 
     def compute_loss(self, preds, embs, batch):
         for k in self.view_keys:

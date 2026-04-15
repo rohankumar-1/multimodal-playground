@@ -27,6 +27,9 @@ If imports fail, ensure the package is installed as above or run `PYTHONPATH=src
 - **`model(batch)`** / **`forward(batch)`** returns **`(predictions, modality_embeddings)`**.
 - **`model.predict(batch)`** returns **predictions only** (one full forward pass; embeddings are dropped).
 - **`Trainer`** calls **`model(batch)`** and uses both outputs for task losses.
+- For optimizers, use **`iter_training_parameters(model, tasks)`** so stateful per-task
+  losses (e.g. a critic) are included; **`model.parameters()`** alone can miss those
+  weights.
 
 ```python
 import torch
@@ -36,7 +39,7 @@ from multimodal.fusion import ConcatFusion
 from multimodal.heads import MultiTaskLinearHead
 from multimodal.model import MultimodalModel
 from multimodal.tasks import ClassificationTask
-from multimodal.train import Trainer, TrainerConfig
+from multimodal.train import Trainer, TrainerConfig, iter_training_parameters
 
 
 embed_dim = 32
@@ -74,7 +77,7 @@ tasks = [
     ClassificationTask("topic", "topic_y"),
 ]
 
-optimizer = torch.optim.Adam(model.parameters(), lr=1e-3)
+optimizer = torch.optim.Adam(iter_training_parameters(model, tasks), lr=1e-3)
 config = TrainerConfig(
     max_epochs=2,
     grad_accum_steps=1,

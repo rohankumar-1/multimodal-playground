@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import warnings
+from collections.abc import Iterable, Iterator
 from dataclasses import dataclass, field
 from pathlib import Path
 
@@ -62,6 +63,38 @@ class TrainerConfig:
     progress_bar: bool = True
     #: Decimal precision when printing metric dicts.
     metric_precision: int = 4
+
+
+def iter_training_parameters(
+    model: nn.Module,
+    tasks: Iterable[BaseTask],
+    *extra_modules: nn.Module,
+) -> Iterator[nn.Parameter]:
+    """Parameters to optimize: ``model`` plus any stateful per-task loss modules, deduplicated.
+
+    Use this when building the optimizer so critics and other :class:`~torch.nn.Module`
+    losses (see :meth:`BaseTask.trainable_loss_modules`) are trained alongside the model::
+
+        opt = torch.optim.Adam(iter_training_parameters(model, tasks), lr=1e-3)
+
+    Parameters shared between ``model`` and a task loss appear once (dedupe by ``id``).
+    Pass optional ``*extra_modules`` for trainable modules not declared on any task.
+    """
+    seen: set[int] = set()
+
+    def _yield_new(from_params: Iterable[nn.Parameter]) -> Iterator[nn.Parameter]:
+        for p in from_params:
+            pid = id(p)
+            if pid not in seen:
+                seen.add(pid)
+                yield p
+
+    yield from _yield_new(model.parameters())
+    for task in tasks:
+        for mod in task.trainable_loss_modules():
+            yield from _yield_new(mod.parameters())
+    for mod in extra_modules:
+        yield from _yield_new(mod.parameters())
 
 
 class Trainer:
