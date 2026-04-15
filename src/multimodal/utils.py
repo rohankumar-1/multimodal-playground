@@ -4,15 +4,28 @@ import torch
 import torch.nn.functional as F
 from torch import nn
 
+from multimodal.contrastive_losses import (
+    CLUB,
+    CriticInfoNCE,
+    InfoNCE,
+    SeparableCritic,
+    SupConLoss,
+    clip_loss,
+)
 
-def clip_loss(z1, z2, temperature):
-    z1 = F.normalize(z1, dim=-1)
-    z2 = F.normalize(z2, dim=-1)
-    logits = (z1 @ z2.T) / temperature
-    labels = torch.arange(z1.size(0), device=z1.device)
-    loss_i = F.cross_entropy(logits, labels)
-    loss_j = F.cross_entropy(logits.T, labels)
-    return (loss_i + loss_j) * 0.5
+__all__ = [
+    "CLUB",
+    "CriticInfoNCE",
+    "InfoNCE",
+    "SeparableCritic",
+    "SupConLoss",
+    "clip_loss",
+    "dice_bce_loss",
+    "dice_loss",
+    "get_activation",
+    "get_norm",
+    "multiclass_dice_loss",
+]
 
 
 def dice_loss(logits, targets, eps=1e-6, apply_sigmoid=True):
@@ -27,11 +40,13 @@ def dice_loss(logits, targets, eps=1e-6, apply_sigmoid=True):
     dice = (2 * intersection + eps) / (denominator + eps)
     return 1 - dice.mean()
 
+
 def dice_bce_loss(logits, targets, bce_weight=0.5, eps=1e-6):
     """ Dice loss with binary cross entropy loss """
     bce = F.binary_cross_entropy_with_logits(logits, targets)
     dsc = dice_loss(logits, targets, eps=eps)
     return bce_weight * bce + (1 - bce_weight) * dsc
+
 
 def multiclass_dice_loss(logits, targets, eps=1e-6):
     """
@@ -49,6 +64,7 @@ def multiclass_dice_loss(logits, targets, eps=1e-6):
         eps=eps,
         apply_sigmoid=False,
     )
+
 
 def get_norm(norm: str | None = None, num_channels: int = 64, dim: int = 2) -> nn.Module | None:
     """
@@ -86,6 +102,7 @@ def get_norm(norm: str | None = None, num_channels: int = 64, dim: int = 2) -> n
 
     raise ValueError(f"Unknown normalization: {norm}")
 
+
 def get_activation(act):
     if act is None:
         return None
@@ -96,7 +113,7 @@ def get_activation(act):
         "relu": nn.ReLU(inplace=True),
         "relu6": nn.ReLU6(inplace=True),
         "gelu": nn.GELU(),
-        "silu": nn.SiLU(),     # swish
+        "silu": nn.SiLU(),  # swish
         "swish": nn.SiLU(),
         "mish": nn.Mish(),
         "tanh": nn.Tanh(),

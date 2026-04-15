@@ -128,19 +128,36 @@ def test_unified_contrastive_model_four_embeddings() -> None:
     assert set(model.encoders.keys()) == {"m1", "m2"}
 
 
-def test_multiview_contrastive_model_concat_fused() -> None:
+def test_multiview_contrastive_model_two_modalities() -> None:
     model = MultiviewContrastiveModel(
-        nn.Linear(2, 3),
-        view_keys=("v0", "v1"),
+        encoders={"a": nn.Linear(2, 3), "b": nn.Linear(4, 3)},
+        view_pairs={"a": ("a", "a_aug"), "b": ("b", "b_aug")},
     )
-    batch = {"v0": torch.randn(2, 2), "v1": torch.randn(2, 2)}
+    batch = {
+        "a": torch.randn(2, 2),
+        "a_aug": torch.randn(2, 2),
+        "b": torch.randn(2, 4),
+        "b_aug": torch.randn(2, 4),
+    }
     preds, embs = model(batch)
     assert preds == {}
-    assert embs["v0"].shape == (2, 3)
-    assert embs["v1"].shape == (2, 3)
-    assert "encoder" in model.encoders
+    assert set(embs.keys()) == {"a", "a_aug", "b", "b_aug"}
+    for t in embs.values():
+        assert t.shape == (2, 3)
+    assert set(model.encoders.keys()) == {"a", "b"}
 
 
-def test_multiview_contrastive_requires_two_views() -> None:
-    with pytest.raises(ValueError, match="at least two"):
-        MultiviewContrastiveModel(nn.Identity(), view_keys=("only",))
+def test_multiview_contrastive_requires_two_modalities() -> None:
+    with pytest.raises(ValueError, match="at least two modalities"):
+        MultiviewContrastiveModel(
+            {"only": nn.Identity()},
+            {"only": ("x", "x_aug")},
+        )
+
+
+def test_multiview_encoder_view_pair_keys_mismatch() -> None:
+    with pytest.raises(ValueError, match="must match"):
+        MultiviewContrastiveModel(
+            {"a": nn.Identity(), "b": nn.Identity()},
+            {"a": ("x", "x_aug")},
+        )

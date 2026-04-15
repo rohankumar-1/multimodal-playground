@@ -39,7 +39,9 @@ class TrainerConfig:
     #: If True, set ``requires_grad=False`` on every submodule in ``model.encoders``.
     #: When True, :attr:`freeze_encoder_modalities` is ignored.
     freeze_all_encoders: bool = False
-    #: Freeze only these encoder keys (must exist on the model). Ignored if
+    #: Freeze only these **encoder tower** keys (must exist in ``model.encoders``). For
+    #: :class:`~multimodal.model.ContrastiveModel`, keys are encoder ids (e.g. ``"vision"``),
+    #: not dataloader batch keys like ``"image_aug"``. Ignored if
     #: :attr:`freeze_all_encoders` is True.
     freeze_encoder_modalities: tuple[str, ...] = ()
     #: If ``None``, enable DDP when ``torchrun`` sets ``WORLD_SIZE > 1``.
@@ -289,10 +291,10 @@ class Trainer:
             step += 1
             if pbar is not None:
                 pbar.update(1)
-                if train and self.config.log_every and (step % self.config.log_every == 0):
-                    pbar.set_postfix(self._format_metrics(metrics, as_postfix=True))
-                elif not train and self.config.log_every and (step % self.config.log_every == 0):
-                    pbar.set_postfix(self._format_metrics(metrics, as_postfix=True))
+                if self.config.log_every and (step % self.config.log_every == 0):
+                    postfix = self._tqdm_postfix_loss_only(metrics)
+                    if postfix is not None:
+                        pbar.set_postfix(postfix)
 
         if pbar is not None:
             pbar.close()
@@ -304,17 +306,20 @@ class Trainer:
         }
         return final_metrics
 
-    def _format_metrics(self, metrics: dict[str, float], *, as_postfix: bool = False):
+    def _tqdm_postfix_loss_only(
+        self, metrics: dict[str, float]
+    ) -> dict[str, float] | None:
+        """Postfix dict for tqdm: only ``loss`` (batch total over tasks), if present."""
+        if "loss" not in metrics:
+            return None
         prec = int(self.config.metric_precision)
-        if as_postfix:
-            out: dict[str, float] = {}
-            for k, v in metrics.items():
-                try:
-                    out[k] = float(round(float(v), prec))
-                except Exception:
-                    pass
-            return out
+        try:
+            return {"loss": float(round(float(metrics["loss"]), prec))}
+        except Exception:
+            return None
 
+    def _format_metrics(self, metrics: dict[str, float]) -> str:
+        prec = int(self.config.metric_precision)
         items = []
         for k in sorted(metrics.keys()):
             v = metrics[k]
@@ -342,6 +347,8 @@ class Trainer:
                 total_loss = total_loss + task_loss
                 metrics.update(task_metrics)
 
+            metrics["loss"] = float(total_loss.detach().item())
+
         # backward + grad accumulation
         accum_loss = total_loss / self.config.grad_accum_steps
         self.scaler.scale(accum_loss).backward()
@@ -366,11 +373,15 @@ class Trainer:
     def _val_step(self, batch):
         preds, embs = self.model(batch)
         metrics_out: dict[str, float] = {}
+        p0 = next(self.model.parameters())
+        total_loss = torch.zeros((), device=p0.device, dtype=p0.dtype)
 
         for task in self.tasks:
-            _, task_metrics = task.compute_loss(preds, embs, batch)
+            task_loss, task_metrics = task.compute_loss(preds, embs, batch)
+            total_loss = total_loss + task_loss
             metrics_out.update(task_metrics)
 
+        metrics_out["loss"] = float(total_loss.detach().item())
         return metrics_out
 
     # -----------------------------------------------------

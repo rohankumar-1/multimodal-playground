@@ -75,7 +75,7 @@ class FashionMNISTWithText(Dataset):
     def __len__(self) -> int:
         return len(self._ds)
 
-    def __getitem__(self, idx: int) -> dict[str, torch.Tensor]:
+    def __getitem__(self, idx: int) -> dict[str, torch.Tensor]: # ty:ignore[invalid-method-override]
         image, target = self._ds[idx]
         name = CLASS_NAMES[int(target)]
         text_ids = self._tokenizer.encode(name)
@@ -83,6 +83,59 @@ class FashionMNISTWithText(Dataset):
             self._image_key: image,
             self._text_key: text_ids,
             "target": torch.tensor(target, dtype=torch.long),
+        }
+
+
+class FashionMNISTImageTextMultiview(Dataset):
+    """Fashion-MNIST with **image + text**, each with an augmented view (FactorCL / multiview).
+
+    Batch keys: ``image``, ``image_aug``, ``text``, ``text_aug``, plus ``target``.
+    Text augmentation is random token masking (positions set to padding id 0).
+    """
+
+    def __init__(
+        self,
+        root: Path,
+        *,
+        train: bool,
+        tokenizer: CharTokenizer,
+        download: bool = True,
+        text_mask_prob: float = 0.15,
+    ) -> None:
+        self._tokenizer = tokenizer
+        self._text_mask_prob = text_mask_prob
+        self._raw = FashionMNIST(
+            root=str(root),
+            train=train,
+            download=download,
+            transform=None,
+        )
+        self._to_tensor = transforms.ToTensor()
+        self._aug = transforms.Compose(
+            [
+                transforms.RandomHorizontalFlip(p=0.5),
+                transforms.RandomAffine(degrees=8, translate=(0.06, 0.06)),
+                transforms.ToTensor(),
+            ]
+        )
+
+    def __len__(self) -> int:
+        return len(self._raw)
+
+    def __getitem__(self, idx: int) -> dict[str, torch.Tensor]:
+        pil, target = self._raw[idx]
+        name = CLASS_NAMES[int(target)]
+        text = self._tokenizer.encode(name)
+        text_aug = text.clone()
+        if self._text_mask_prob > 0:
+            mask = torch.rand(text_aug.numel()) < self._text_mask_prob
+            text_aug[mask] = 0
+        return {
+            "image": self._to_tensor(pil),
+            "image_aug": self._aug(pil),
+            "text": text,
+            "text_aug": text_aug,
+            "target": torch.tensor(int(target), dtype=torch.long),
         }
 
 

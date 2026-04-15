@@ -123,58 +123,71 @@ class UnimodalModel(nn.Module):
         return {self.input_key: self.encoders[self.input_key](batch[self.input_key])}
 
 
-class UnifiedContrastiveModel(nn.Module):
-    """Two modality-specific encoders, shared latent via optional projections.
+def _module_dict_projs(
+    modalities: tuple[str, ...],
+    projs: dict[str, nn.Module | None] | None,
+) -> nn.ModuleDict:
+    out: dict[str, nn.Module] = {}
+    for m in modalities:
+        p = None if projs is None else projs.get(m)
+        out[m] = p if p is not None else nn.Identity()
+    return nn.ModuleDict(out)
 
-    For each modality you provide **two batch keys** (original and augmentation) so the
-    model can expose four embeddings: unimodal A, unimodal A aug, unimodal B, unimodal B aug.
-    Pair these with multiple :class:`~multimodal.tasks.ContrastiveTask` instances, e.g.
-    ``(keys_m1[0], keys_m1[1])``, ``(keys_m2[0], keys_m2[1])``, ``(keys_m1[0], keys_m2[0])``.
 
-    ``head`` defaults to :class:`~multimodal.heads.basic.NoOpHead` when training is driven
-    only by contrastive losses on ``embs``. A fused vector (concat of projected **first**
-    views ``z_m1``, ``z_m2``) is passed to ``head`` for API compatibility.
+class ContrastiveModel(nn.Module):
+    """Routed encoders for contrastive **training** (losses live in tasks, not here).
+
+    **Encoders** are logical towers keyed by ids (e.g. ``"vision"``, ``"text"``). **Route**
+    maps each **dataloader / batch key** to an encoder id so multiple batch keys can share
+    one tower (e.g. ``image`` and ``image_aug`` both → ``"vision"``).
+
+    Forward returns ``preds={}`` and ``embs`` keyed by **batch keys** from ``route``, each
+    ``proj(encoder(batch[key]))``. Use :class:`~multimodal.tasks.ContrastiveTask` (or other
+    tasks) on those ``embs`` keys.
+
+    For :class:`~multimodal.train.Trainer` freezing, ``freeze_encoder_modalities`` refers to
+    **encoder ids** in ``self.encoders``, not batch keys—freezing ``"vision"`` freezes the
+    tower used for every batch key routed to it.
+
+    Also known conceptually as a *routed embedding* stack (no contrastive loss inside this
+    module).
     """
 
     def __init__(
         self,
-        encoder_m1: nn.Module,
-        encoder_m2: nn.Module,
+        encoders: dict[str, nn.Module],
+        route: dict[str, str],
         *,
-        proj_m1: nn.Module | None = None,
-        proj_m2: nn.Module | None = None,
-        head: nn.Module | None = None,
-        keys_m1: tuple[str, str] = ("m1", "m1_aug"),
-        keys_m2: tuple[str, str] = ("m2", "m2_aug"),
+        projs: dict[str, nn.Module | None] | None = None,
     ) -> None:
         super().__init__()
-        self.encoders = nn.ModuleDict({"m1": encoder_m1, "m2": encoder_m2})
-        self.proj_m1 = proj_m1 or nn.Identity()
-        self.proj_m2 = proj_m2 or nn.Identity()
-        self.head = head if head is not None else NoOpHead()
-        self.k1a, self.k1b = keys_m1
-        self.k2a, self.k2b = keys_m2
+        if not route:
+            raise ValueError("ContrastiveModel requires a non-empty route")
+        self.encoders = nn.ModuleDict(dict(sorted(encoders.items())))
+        self.route = dict(sorted(route.items()))
+        enc_ids = tuple(sorted(self.encoders.keys()))
+        for batch_key, enc_id in self.route.items():
+            if enc_id not in self.encoders:
+                raise ValueError(
+                    f"route[{batch_key!r}] = {enc_id!r} is not a key in encoders "
+                    f"{sorted(self.encoders.keys())}"
+                )
+        self.proj = _module_dict_projs(enc_ids, projs)
 
     def forward(
         self, batch: dict[str, Any]
-    ) -> tuple[torch.Tensor | dict[str, torch.Tensor], dict[str, torch.Tensor]]:
-        for k in (self.k1a, self.k1b, self.k2a, self.k2b):
-            if k not in batch:
-                raise KeyError(f"batch missing key {k!r}")
-
-        z1 = self.proj_m1(self.encoders["m1"](batch[self.k1a]))
-        z1_aug = self.proj_m1(self.encoders["m1"](batch[self.k1b]))
-        z2 = self.proj_m2(self.encoders["m2"](batch[self.k2a]))
-        z2_aug = self.proj_m2(self.encoders["m2"](batch[self.k2b]))
-
-        embs: dict[str, torch.Tensor] = {
-            self.k1a: z1,
-            self.k1b: z1_aug,
-            self.k2a: z2,
-            self.k2b: z2_aug,
-        }
-        fused = torch.cat([z1, z2], dim=-1)
-        predictions = self.head(fused)
+    ) -> tuple[dict[str, torch.Tensor], dict[str, torch.Tensor]]:
+        embs: dict[str, torch.Tensor] = {}
+        for batch_key in self.route:
+            enc_id = self.route[batch_key]
+            if batch_key not in batch:
+                raise KeyError(
+                    f"batch missing key {batch_key!r} required by route "
+                    f"(encoder {enc_id!r})"
+                )
+            h = self.encoders[enc_id](batch[batch_key])
+            embs[batch_key] = self.proj[enc_id](h)
+        predictions: dict[str, torch.Tensor] = {}
         return predictions, embs
 
     def predict(self, batch: dict[str, Any]) -> torch.Tensor | dict[str, torch.Tensor]:
@@ -187,44 +200,72 @@ class UnifiedContrastiveModel(nn.Module):
 
 
 class MultiviewContrastiveModel(nn.Module):
-    """One encoder (and optional projection) applied to **each view** in the batch.
+    """Multi-encoder contrastive setup: **per modality** an encoder and an (x, x_aug) pair.
 
-    Batch keys are given by ``view_keys`` (e.g. ``("x", "x_aug")`` or more views).
-    Embeddings are ``proj(encoder(batch[k]))`` for each ``k``. Fused features for
-    ``head`` are the concatenation of embeddings in ``view_keys`` order.
+    ``encoders`` maps a modality id (e.g. ``"image"``, ``"text"``) to its tower.
+    ``view_pairs`` maps the same modality id to ``(batch_key_x, batch_key_x_aug)``.
+    The forward pass fills ``embs`` using those **batch key names**, so you can attach
+    multiple :class:`~multimodal.tasks.ContrastiveTask` instances, e.g. unimodal
+    ``(image, image_aug)``, ``(text, text_aug)``, and cross-modal ``(image, text)``.
 
-    Use with one or more :class:`~multimodal.tasks.ContrastiveTask` on pairs of
-    ``embs`` keys (e.g. ``("x", "x_aug")``).
+    Requires **at least two modalities** (for cross-modal alignment in typical FactorCL-style
+    training). ``head`` defaults to :class:`~multimodal.heads.basic.NoOpHead`.
+
+    ``fuse_keys`` selects which ``embs`` keys are concatenated for ``head`` (default: the
+    first view of each modality, in sorted modality-id order).
     """
 
     def __init__(
         self,
-        encoder: nn.Module,
-        view_keys: tuple[str, ...],
+        encoders: dict[str, nn.Module],
+        view_pairs: dict[str, tuple[str, str]],
         *,
-        proj: nn.Module | None = None,
+        projs: dict[str, nn.Module | None] | None = None,
         head: nn.Module | None = None,
-        encoder_key: str = "encoder",
+        fuse_keys: tuple[str, ...] | None = None,
     ) -> None:
         super().__init__()
-        if len(view_keys) < 2:
-            raise ValueError("MultiviewContrastiveModel requires at least two view_keys")
-        self.view_keys = tuple(view_keys)
-        self.encoders = nn.ModuleDict({encoder_key: encoder})
-        self._encoder_key = encoder_key
-        self.proj = proj or nn.Identity()
+        if len(encoders) < 2:
+            raise ValueError(
+                "MultiviewContrastiveModel expects at least two modalities "
+                "(use UnimodalModel or MultimodalModel for a single tower)."
+            )
+        enc_keys = set(encoders.keys())
+        vp_keys = set(view_pairs.keys())
+        if enc_keys != vp_keys:
+            raise ValueError(
+                f"encoders keys {sorted(enc_keys)} must match view_pairs keys {sorted(vp_keys)}"
+            )
+        self.view_pairs = {k: (view_pairs[k][0], view_pairs[k][1]) for k in sorted(view_pairs)}
+        self.encoders = nn.ModuleDict(dict(sorted(encoders.items())))
+        modalities = tuple(sorted(self.view_pairs.keys()))
+        self.proj = _module_dict_projs(modalities, projs)
         self.head = head if head is not None else NoOpHead()
+        if fuse_keys is None:
+            self._fuse_keys = tuple(self.view_pairs[m][0] for m in modalities)
+        else:
+            self._fuse_keys = tuple(fuse_keys)
 
     def forward(
         self, batch: dict[str, Any]
     ) -> tuple[torch.Tensor | dict[str, torch.Tensor], dict[str, torch.Tensor]]:
-        enc = self.encoders[self._encoder_key]
         embs: dict[str, torch.Tensor] = {}
-        for k in self.view_keys:
-            if k not in batch:
-                raise KeyError(f"batch missing view key {k!r}")
-            embs[k] = self.proj(enc(batch[k]))
-        fused = torch.cat([embs[k] for k in self.view_keys], dim=-1)
+        for m, (ka, kb) in self.view_pairs.items():
+            enc = self.encoders[m]
+            proj = self.proj[m]
+            for key in (ka, kb):
+                if key not in batch:
+                    raise KeyError(f"batch missing key {key!r} for modality {m!r}")
+            embs[ka] = proj(enc(batch[ka]))
+            embs[kb] = proj(enc(batch[kb]))
+
+        missing = [k for k in self._fuse_keys if k not in embs]
+        if missing:
+            raise KeyError(
+                f"fuse_keys {self._fuse_keys} not in embs; missing: {missing}. "
+                f"Available keys: {sorted(embs.keys())}"
+            )
+        fused = torch.cat([embs[k] for k in self._fuse_keys], dim=-1)
         predictions = self.head(fused)
         return predictions, embs
 
@@ -235,4 +276,26 @@ class MultiviewContrastiveModel(nn.Module):
     def encode(self, batch: dict[str, Any]) -> dict[str, torch.Tensor]:
         _, embs = self.forward(batch)
         return embs
+
+
+class UnifiedContrastiveModel(MultiviewContrastiveModel):
+    """Convenience wrapper: two modalities named ``m1`` and ``m2`` (see :class:`MultiviewContrastiveModel`)."""
+
+    def __init__(
+        self,
+        encoder_m1: nn.Module,
+        encoder_m2: nn.Module,
+        *,
+        proj_m1: nn.Module | None = None,
+        proj_m2: nn.Module | None = None,
+        head: nn.Module | None = None,
+        keys_m1: tuple[str, str] = ("m1", "m1_aug"),
+        keys_m2: tuple[str, str] = ("m2", "m2_aug"),
+    ) -> None:
+        super().__init__(
+            encoders={"m1": encoder_m1, "m2": encoder_m2},
+            view_pairs={"m1": keys_m1, "m2": keys_m2},
+            projs={"m1": proj_m1, "m2": proj_m2},
+            head=head,
+        )
 
