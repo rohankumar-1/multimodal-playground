@@ -38,7 +38,6 @@ from multimodal.model import MultimodalModel
 from multimodal.tasks import ClassificationTask
 from multimodal.train import Trainer, TrainerConfig
 
-
 class ClsHead(nn.Module):
     def __init__(self, in_dim: int, num_classes: int) -> None:
         super().__init__()
@@ -91,7 +90,7 @@ def main() -> None:
         metric_precision=4,
         progress_bar=True,
     )
-    trainer = Trainer(model, tasks, optimizer, config)
+    trainer = Trainer(model, tasks, optimizer, config)  # ty:ignore[invalid-argument-type]
     print(f"Data root: {root} | device={device}")
     trainer.train(train_loader, val_loader)
 

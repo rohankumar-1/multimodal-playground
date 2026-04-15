@@ -47,7 +47,7 @@ class NoOpHead(nn.Module):
 
     Use when training is driven only by per-modality encoder outputs in ``embs``
     (for example :class:`~multimodal.tasks.ContrastiveTask` with
-    :func:`~multimodal.utils.clip_loss`). :class:`~multimodal.model.MultimodalModel`
+    :func:`~multimodal.losses.clip_loss`). :class:`~multimodal.model.MultimodalModel`
     still runs fusion and this head so the forward API stays unchanged; this module has
     no parameters and does not contribute to the loss.
     """

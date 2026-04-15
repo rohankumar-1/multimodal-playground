@@ -124,7 +124,7 @@ def test_trainer_saves_checkpoint_on_val(tmp_path: Path) -> None:
     assert "cls/loss" in data["val_metrics"]
 
 
-def test_trainer_freeze_encoder_modalities() -> None:
+def test_trainer_freeze_encoder_ids() -> None:
     model = MultimodalModel(
         {"v": nn.Linear(2, 4), "t": nn.Linear(2, 4)},
         ConcatFusion(dim=-1),
@@ -136,7 +136,7 @@ def test_trainer_freeze_encoder_modalities() -> None:
         grad_accum_steps=1,
         mixed_precision=False,
         device="cpu",
-        freeze_encoder_modalities=("v",),
+        freeze_encoder_ids=("v",),
         progress_bar=False,
     )
     Trainer(
@@ -186,10 +186,10 @@ def test_trainer_freeze_unknown_modality_raises() -> None:
         grad_accum_steps=1,
         mixed_precision=False,
         device="cpu",
-        freeze_encoder_modalities=("not_a_modality",),
+        freeze_encoder_ids=("not_a_modality",),
         progress_bar=False,
     )
-    with pytest.raises(KeyError, match="unknown modality"):
+    with pytest.raises(KeyError, match="unknown encoder id"):
         Trainer(
             model,
             [ClassificationTask("cls", "labels")],

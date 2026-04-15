@@ -102,16 +102,19 @@ For GPU training, set `device="cuda"` and `mixed_precision=True` in `TrainerConf
 The trainer can freeze encoder weights when it is constructed (after `model.to(device)`):
 
 - **`freeze_all_encoders=True`** — sets `requires_grad=False` on every submodule in `model.encoders`.
-- **`freeze_encoder_modalities=("vision",)`** — freeze only the listed names (must match keys in `model.encoders`). Ignored if `freeze_all_encoders` is True.
+- **`freeze_encoder_ids=("vision",)`** — freeze only the listed **encoder tower** keys (must match keys in `model.encoders`). Ignored if `freeze_all_encoders` is True.
 
 ```python
+from multimodal.train import DDPConfig, TrainerConfig
+
 config = TrainerConfig(
     max_epochs=2,
     grad_accum_steps=1,
     mixed_precision=False,
     device="cpu",
-    freeze_encoder_modalities=("vision",),  # train `text` encoder + fusion + head
+    freeze_encoder_ids=("vision",),  # train `text` encoder + fusion + head
     # freeze_all_encoders=True,  # alternative: freeze every encoder
+    # ddp=DDPConfig(backend="nccl", sync_bn=True),  # when using DDP
 )
 trainer = Trainer(model, tasks, optimizer, config)
 ```

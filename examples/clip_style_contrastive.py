@@ -6,8 +6,8 @@ Loss is only :class:`~multimodal.tasks.ContrastiveTask` on ``embs["image"]`` and
 ``embs["text"]`` (see ``clip_loss`` in ``multimodal.utils``). The fusion + head path still
 runs for API compatibility; :class:`~multimodal.heads.NoOpHead` returns no supervised logits.
 
-For **multi-view / unimodal** contrastive (same encoder, two views), see
-``factorcl_multiview.py`` and :class:`~multimodal.model.MultiviewContrastiveModel`.
+For **multi-view FactorCL** (per-modality x / x_aug plus cross-modal), see
+``multiview_clip.py`` and :class:`~multimodal.model.MultiviewContrastiveModel`.
 
 Run::
 
@@ -78,7 +78,7 @@ def main() -> None:
         metric_precision=4,
         progress_bar=True,
     )
-    trainer = Trainer(model, tasks, optimizer, config)
+    trainer = Trainer(model, tasks, optimizer, config)  # ty:ignore[invalid-argument-type]
     print(f"Data root: {root} | device={device} | contrastive on embs['image'] × embs['text']")
     trainer.train(train_loader, val_loader)
 

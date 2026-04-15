@@ -2,7 +2,7 @@
 from __future__ import annotations
 
 import warnings
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from pathlib import Path
 
 import torch
@@ -23,6 +23,16 @@ from multimodal.tasks import BaseTask
 
 
 @dataclass
+class DDPConfig:
+    """DistributedDataParallel and process-group options (used when DDP is enabled)."""
+
+    backend: str = "nccl"
+    find_unused_parameters: bool = False
+    static_graph: bool = False
+    sync_bn: bool = False
+
+
+@dataclass
 class TrainerConfig:
     max_epochs: int
     grad_accum_steps: int = 1
@@ -37,18 +47,17 @@ class TrainerConfig:
     #: If ``None``, sums all values whose keys end with ``"/loss"`` (multi-task total).
     checkpoint_monitor_key: str | None = None
     #: If True, set ``requires_grad=False`` on every submodule in ``model.encoders``.
-    #: When True, :attr:`freeze_encoder_modalities` is ignored.
+    #: When True, :attr:`freeze_encoder_ids` is ignored.
     freeze_all_encoders: bool = False
-    #: Freeze only these encoder keys (must exist on the model). Ignored if
-    #: :attr:`freeze_all_encoders` is True.
-    freeze_encoder_modalities: tuple[str, ...] = ()
+    #: Freeze only these **encoder tower** keys (must exist in ``model.encoders``). For
+    #: :class:`~multimodal.model.ContrastiveModel`, use encoder ids (e.g. ``"vision"``), not
+    #: dataloader batch keys like ``"image_aug"``. Ignored if :attr:`freeze_all_encoders`
+    #: is True.
+    freeze_encoder_ids: tuple[str, ...] = ()
     #: If ``None``, enable DDP when ``torchrun`` sets ``WORLD_SIZE > 1``.
     #: If ``True``, require multi-process launch; if ``False``, never wrap with DDP.
     distributed: bool | None = None
-    ddp_backend: str = "nccl"
-    ddp_find_unused_parameters: bool = False
-    ddp_static_graph: bool = False
-    ddp_sync_bn: bool = False
+    ddp: DDPConfig = field(default_factory=DDPConfig)
     #: If True, show a tqdm progress bar (rank 0 only under DDP).
     progress_bar: bool = True
     #: Decimal precision when printing metric dicts.
@@ -81,7 +90,7 @@ class Trainer:
             self._use_ddp = env is not None and env.world_size > 1
 
         if self._use_ddp:
-            init_distributed(backend=config.ddp_backend)
+            init_distributed(backend=config.ddp.backend)
             self._rank = get_rank()
             self._world_size = get_world_size()
             self._local_rank = env.local_rank if env is not None else 0
@@ -98,7 +107,7 @@ class Trainer:
 
         self._apply_encoder_freezing()
 
-        if self._use_ddp and config.ddp_sync_bn:
+        if self._use_ddp and config.ddp.sync_bn:
             self._raw_model = torch.nn.SyncBatchNorm.convert_sync_batchnorm(self._raw_model)
 
         if self._use_ddp:
@@ -112,8 +121,8 @@ class Trainer:
                 self._raw_model,
                 device_ids=dev_ids,
                 output_device=out_dev,
-                find_unused_parameters=config.ddp_find_unused_parameters,
-                static_graph=config.ddp_static_graph,
+                find_unused_parameters=config.ddp.find_unused_parameters,
+                static_graph=config.ddp.static_graph,
             )
         else:
             self.model = self._raw_model
@@ -148,10 +157,10 @@ class Trainer:
                     p.requires_grad = False
             return
 
-        for name in cfg.freeze_encoder_modalities:
+        for name in cfg.freeze_encoder_ids:
             if name not in enc:  # ty:ignore[unsupported-operator]
                 raise KeyError(
-                    f"freeze_encoder_modalities: unknown modality {name!r}; "
+                    f"freeze_encoder_ids: unknown encoder id {name!r}; "
                     f"available: {sorted(enc.keys())}"  # ty:ignore[unresolved-attribute, call-non-callable]
                 )
             for p in enc[name].parameters():  # ty:ignore[unresolved-attribute, invalid-argument-type, not-subscriptable]
@@ -289,10 +298,10 @@ class Trainer:
             step += 1
             if pbar is not None:
                 pbar.update(1)
-                if train and self.config.log_every and (step % self.config.log_every == 0):
-                    pbar.set_postfix(self._format_metrics(metrics, as_postfix=True))
-                elif not train and self.config.log_every and (step % self.config.log_every == 0):
-                    pbar.set_postfix(self._format_metrics(metrics, as_postfix=True))
+                if self.config.log_every and (step % self.config.log_every == 0):
+                    postfix = self._tqdm_postfix_loss_only(metrics)
+                    if postfix is not None:
+                        pbar.set_postfix(postfix)
 
         if pbar is not None:
             pbar.close()
@@ -304,17 +313,20 @@ class Trainer:
         }
         return final_metrics
 
-    def _format_metrics(self, metrics: dict[str, float], *, as_postfix: bool = False):
+    def _tqdm_postfix_loss_only(
+        self, metrics: dict[str, float]
+    ) -> dict[str, float] | None:
+        """Postfix dict for tqdm: only ``loss`` (batch total over tasks), if present."""
+        if "loss" not in metrics:
+            return None
         prec = int(self.config.metric_precision)
-        if as_postfix:
-            out: dict[str, float] = {}
-            for k, v in metrics.items():
-                try:
-                    out[k] = float(round(float(v), prec))
-                except Exception:
-                    pass
-            return out
+        try:
+            return {"loss": float(round(float(metrics["loss"]), prec))}
+        except Exception:
+            return None
 
+    def _format_metrics(self, metrics: dict[str, float]) -> str:
+        prec = int(self.config.metric_precision)
         items = []
         for k in sorted(metrics.keys()):
             v = metrics[k]
@@ -342,6 +354,8 @@ class Trainer:
                 total_loss = total_loss + task_loss
                 metrics.update(task_metrics)
 
+            metrics["loss"] = float(total_loss.detach().item())
+
         # backward + grad accumulation
         accum_loss = total_loss / self.config.grad_accum_steps
         self.scaler.scale(accum_loss).backward()
@@ -366,11 +380,15 @@ class Trainer:
     def _val_step(self, batch):
         preds, embs = self.model(batch)
         metrics_out: dict[str, float] = {}
+        p0 = next(self.model.parameters())
+        total_loss = torch.zeros((), device=p0.device, dtype=p0.dtype)
 
         for task in self.tasks:
-            _, task_metrics = task.compute_loss(preds, embs, batch)
+            task_loss, task_metrics = task.compute_loss(preds, embs, batch)
+            total_loss = total_loss + task_loss
             metrics_out.update(task_metrics)
 
+        metrics_out["loss"] = float(total_loss.detach().item())
         return metrics_out
 
     # -----------------------------------------------------

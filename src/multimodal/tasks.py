@@ -1,11 +1,13 @@
 from __future__ import annotations
 
 from abc import abstractmethod
+from collections.abc import Callable
 
 import torch
 import torch.nn.functional as F
+from torch import nn
 
-from multimodal.utils import clip_loss, dice_bce_loss, dice_loss, multiclass_dice_loss
+from multimodal.losses import InfoNCE, SupConLoss, dice_bce_loss, dice_loss, multiclass_dice_loss
 
 
 class BaseTask:
@@ -50,6 +52,7 @@ class MultiLabelTask(BaseTask):
         metrics = {f"{self.name}/loss": loss.item()}
         return loss * self.weight, metrics
 
+
 class MultiTaskTask(BaseTask):
     def __init__(self, name, head_to_target: dict, weight=1.0):
         super().__init__(name, weight)
@@ -69,6 +72,7 @@ class MultiTaskTask(BaseTask):
 
         return total * self.weight, metrics
 
+
 class RegressionTask(BaseTask):
     def __init__(self, name, target_key, weight=1.0):
         super().__init__(name, weight)
@@ -83,18 +87,88 @@ class RegressionTask(BaseTask):
         metrics = {f"{self.name}/rmse": loss.sqrt().item()}
         return loss * self.weight, metrics
 
+
 class ContrastiveTask(BaseTask):
-    def __init__(self, name, mod1, mod2, temperature=0.07, weight=1.0):
+    """Pairwise contrastive loss on two ``embs`` keys (e.g. two modalities or two views).
+
+    **Loss construction (current API).** The default is symmetric
+    :class:`~multimodal.losses.InfoNCE` driven by ``temperature``. For anything else (critic
+    InfoNCE, asymmetric temperature, custom logits), pass an ``nn.Module`` or callable as
+    ``loss_fn``; it is invoked as ``loss_fn(embs[mod1], embs[mod2])``. That keeps the task
+    thin and avoids a growing matrix of constructor flags; trainable auxiliaries (e.g. a
+    bilinear critic) live on ``loss_fn`` and should be included in the optimizer (see trainer
+    docs / future ``auxiliary_modules``-style API).
+
+    **Possible evolution.** A small factory (e.g. ``loss="infonce" | "critic"`` plus shared
+    kwargs) could wrap the same ``loss_fn`` slot for discoverability, as long as advanced
+    cases still pass a custom module unchanged.
+    """
+
+    def __init__(
+        self,
+        name: str,
+        mod1: str,
+        mod2: str,
+        *,
+        loss_fn: nn.Module | Callable[[torch.Tensor, torch.Tensor], torch.Tensor] | None = None,
+        temperature: float = 0.07,
+        weight: float = 1.0,
+    ) -> None:
         super().__init__(name, weight)
-        self.m1 = mod1
-        self.m2 = mod2
-        self.temperature = temperature
+        self.mod1 = mod1
+        self.mod2 = mod2
+        if loss_fn is None:
+            self.loss_fn: nn.Module | Callable[..., torch.Tensor] = InfoNCE(
+                temperature=temperature, symmetric=True
+            )
+        else:
+            self.loss_fn = loss_fn
 
     def compute_loss(self, preds, embs, batch):
-        z1 = embs[self.m1]
-        z2 = embs[self.m2]
+        z1 = embs[self.mod1]
+        z2 = embs[self.mod2]
+        loss = self.loss_fn(z1, z2)
+        metrics = {f"{self.name}/loss": loss.item()}
+        return loss * self.weight, metrics
 
-        loss = clip_loss(z1, z2, self.temperature)
+
+class SupervisedContrastiveTask(BaseTask):
+    """Supervised contrastive (multi-view) on stacked ``embs`` and class labels.
+
+    Stacks ``embs[k]`` for each ``k`` in ``view_keys`` along a view dimension → ``[B, V, D]``,
+    then applies ``loss_module`` (default: :class:`~multimodal.losses.SupConLoss`).
+    ``batch[label_key]`` must be integer class ids of shape ``[B]``.
+    """
+
+    def __init__(
+        self,
+        name: str,
+        view_keys: tuple[str, ...],
+        label_key: str,
+        *,
+        loss_module: nn.Module | None = None,
+        temperature: float = 0.07,
+        weight: float = 1.0,
+    ) -> None:
+        super().__init__(name, weight)
+        if len(view_keys) < 2:
+            raise ValueError("SupervisedContrastiveTask needs at least two view_keys")
+        self.view_keys = tuple(view_keys)
+        self.label_key = label_key
+        self.loss_module = (
+            loss_module if loss_module is not None else SupConLoss(temperature=temperature)
+        )
+
+    def compute_loss(self, preds, embs, batch):
+        for k in self.view_keys:
+            if k not in embs:
+                raise KeyError(f"SupervisedContrastiveTask: embs missing key {k!r}")
+        if self.label_key not in batch:
+            raise KeyError(f"SupervisedContrastiveTask: batch missing label_key {self.label_key!r}")
+
+        z = torch.stack([embs[k] for k in self.view_keys], dim=1)
+        labels = batch[self.label_key].long()
+        loss = self.loss_module(z, labels)
         metrics = {f"{self.name}/loss": loss.item()}
         return loss * self.weight, metrics
 
@@ -115,7 +189,6 @@ class ReconstructionTask(BaseTask):
 
         metrics = {f"{self.name}/loss": loss.item()}
         return loss * self.weight, metrics
-
 
 
 class DiceTask(BaseTask):
@@ -160,4 +233,3 @@ class MultiClassDiceTask(BaseTask):
 
         metrics = {f"{self.name}/dice_loss": loss.item()}
         return loss * self.weight, metrics
-
