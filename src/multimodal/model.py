@@ -135,23 +135,33 @@ def _module_dict_projs(
 
 
 class ContrastiveModel(nn.Module):
-    """Routed encoders for contrastive **training** (losses live in tasks, not here).
+    """Routed encoders for contrastive training (losses live in tasks, not here).
 
-    **Encoders** are logical towers keyed by ids (e.g. ``"vision"``, ``"text"``). **Route**
-    maps each **dataloader / batch key** to an encoder id so multiple batch keys can share
-    one tower (e.g. ``image`` and ``image_aug`` both → ``"vision"``).
+    **Encoders** are towers keyed by ids (e.g. ``"vision"``, ``"text"``). **Route** maps each
+    **batch key** to an encoder id so several inputs can share one tower (e.g. ``image`` and
+    ``image_aug`` → ``"vision"``).
 
-    Forward returns ``preds={}`` and ``embs`` keyed by **batch keys** from ``route``, each
-    ``proj(encoder(batch[key]))``. Use :class:`~multimodal.tasks.ContrastiveTask` (or other
-    tasks) on those ``embs`` keys.
+    Forward returns ``embs`` keyed by **batch keys** in ``route``, each
+    ``proj(encoder(batch[key]))``. By default ``preds`` is ``{}``. If ``fuse_keys`` is set,
+    those embeddings are concatenated (in order) and passed through ``head`` (defaults to
+    :class:`~multimodal.heads.basic.NoOpHead` when ``fuse_keys`` is set and ``head`` is
+    omitted)—the same auxiliary path older multiview stacks used.
 
-    For :class:`~multimodal.train.Trainer` freezing, ``freeze_encoder_modalities`` refers to
-    **encoder ids** in ``self.encoders``, not batch keys—freezing ``"vision"`` freezes the
-    tower used for every batch key routed to it.
+    **Routing presets**
 
-    Also known conceptually as a *routed embedding* stack (no contrastive loss inside this
-    module).
+    - :meth:`route_from_view_pairs` — build ``route`` from
+      ``{encoder_id: (batch_key_a, batch_key_b), ...}``.
+    - :meth:`fuse_keys_first_views` — default concat order (first view per encoder, sorted
+      encoder ids).
+    - :meth:`from_view_pairs` — one-call construction from ``view_pairs`` with optional fused
+      head (see ``use_fused_path``).
+
+    For :class:`~multimodal.train.Trainer` freezing, use ``TrainerConfig.freeze_encoder_ids``;
+    values must match keys in ``self.encoders`` (tower ids), not batch keys.
     """
+
+    fuse_keys: tuple[str, ...] | None
+    fused_head: nn.Module | None
 
     def __init__(
         self,
@@ -159,6 +169,8 @@ class ContrastiveModel(nn.Module):
         route: dict[str, str],
         *,
         projs: dict[str, nn.Module | None] | None = None,
+        head: nn.Module | None = None,
+        fuse_keys: tuple[str, ...] | None = None,
     ) -> None:
         super().__init__()
         if not route:
@@ -174,9 +186,78 @@ class ContrastiveModel(nn.Module):
                 )
         self.proj = _module_dict_projs(enc_ids, projs)
 
+        self.fuse_keys = tuple(fuse_keys) if fuse_keys is not None else None
+        if self.fuse_keys is not None:
+            self.fused_head = head if head is not None else NoOpHead()
+        else:
+            if head is not None:
+                raise ValueError(
+                    "ContrastiveModel: `head` was given but `fuse_keys` is None; "
+                    "set `fuse_keys` to select which `embs` to concatenate for the head."
+                )
+            self.fused_head = None
+
+    @staticmethod
+    def route_from_view_pairs(view_pairs: dict[str, tuple[str, str]]) -> dict[str, str]:
+        """Map each batch key in ``view_pairs`` values to the corresponding encoder id (dict key)."""
+        out: dict[str, str] = {}
+        for enc_id in sorted(view_pairs.keys()):
+            k0, k1 = view_pairs[enc_id]
+            out[k0] = enc_id
+            out[k1] = enc_id
+        return dict(sorted(out.items()))
+
+    @staticmethod
+    def fuse_keys_first_views(view_pairs: dict[str, tuple[str, str]]) -> tuple[str, ...]:
+        """First batch key of each ``(k_a, k_b)`` pair, in sorted encoder-id order."""
+        return tuple(view_pairs[enc_id][0] for enc_id in sorted(view_pairs.keys()))
+
+    @classmethod
+    def from_view_pairs(
+        cls,
+        encoders: dict[str, nn.Module],
+        view_pairs: dict[str, tuple[str, str]],
+        *,
+        projs: dict[str, nn.Module | None] | None = None,
+        head: nn.Module | None = None,
+        fuse_keys: tuple[str, ...] | None = None,
+        use_fused_path: bool = True,
+    ) -> ContrastiveModel:
+        """Build a model where each encoder serves two batch keys (e.g. x and x_aug).
+
+        ``encoders`` keys must match ``view_pairs`` keys. With ``use_fused_path=True`` (default),
+        sets ``fuse_keys`` to :meth:`fuse_keys_first_views` unless overridden, and ``head`` to
+        :class:`~multimodal.heads.basic.NoOpHead` if omitted. With ``use_fused_path=False``,
+        only the routed embedding path is used (``preds={}``); ``fuse_keys`` and ``head`` must
+        not be set.
+
+        Expects **at least two encoders** (typical multiview + cross-modal setups).
+        """
+        if len(encoders) < 2:
+            raise ValueError(
+                "from_view_pairs expects at least two encoders for typical multiview "
+                "setups (build ContrastiveModel(encoders, route) directly for one tower)."
+            )
+        enc_keys = set(encoders.keys())
+        vp_keys = set(view_pairs.keys())
+        if enc_keys != vp_keys:
+            raise ValueError(
+                f"encoders keys {sorted(enc_keys)} must match view_pairs keys {sorted(vp_keys)}"
+            )
+        route = cls.route_from_view_pairs(view_pairs)
+        if use_fused_path:
+            fk = fuse_keys if fuse_keys is not None else cls.fuse_keys_first_views(view_pairs)
+            return cls(encoders=encoders, route=route, projs=projs, head=head, fuse_keys=fk)
+        if fuse_keys is not None or head is not None:
+            raise ValueError(
+                "use_fused_path=False is incompatible with fuse_keys/head; "
+                "omit those or set use_fused_path=True."
+            )
+        return cls(encoders=encoders, route=route, projs=projs)
+
     def forward(
         self, batch: dict[str, Any]
-    ) -> tuple[dict[str, torch.Tensor], dict[str, torch.Tensor]]:
+    ) -> tuple[torch.Tensor | dict[str, torch.Tensor], dict[str, torch.Tensor]]:
         embs: dict[str, torch.Tensor] = {}
         for batch_key in self.route:
             enc_id = self.route[batch_key]
@@ -187,86 +268,19 @@ class ContrastiveModel(nn.Module):
                 )
             h = self.encoders[enc_id](batch[batch_key])
             embs[batch_key] = self.proj[enc_id](h)
-        predictions: dict[str, torch.Tensor] = {}
-        return predictions, embs
 
-    def predict(self, batch: dict[str, Any]) -> torch.Tensor | dict[str, torch.Tensor]:
-        predictions, _ = self.forward(batch)
-        return predictions
-
-    def encode(self, batch: dict[str, Any]) -> dict[str, torch.Tensor]:
-        _, embs = self.forward(batch)
-        return embs
-
-
-class MultiviewContrastiveModel(nn.Module):
-    """Multi-encoder contrastive setup: **per modality** an encoder and an (x, x_aug) pair.
-
-    ``encoders`` maps a modality id (e.g. ``"image"``, ``"text"``) to its tower.
-    ``view_pairs`` maps the same modality id to ``(batch_key_x, batch_key_x_aug)``.
-    The forward pass fills ``embs`` using those **batch key names**, so you can attach
-    multiple :class:`~multimodal.tasks.ContrastiveTask` instances, e.g. unimodal
-    ``(image, image_aug)``, ``(text, text_aug)``, and cross-modal ``(image, text)``.
-
-    Requires **at least two modalities** (for cross-modal alignment in typical FactorCL-style
-    training). ``head`` defaults to :class:`~multimodal.heads.basic.NoOpHead`.
-
-    ``fuse_keys`` selects which ``embs`` keys are concatenated for ``head`` (default: the
-    first view of each modality, in sorted modality-id order).
-    """
-
-    def __init__(
-        self,
-        encoders: dict[str, nn.Module],
-        view_pairs: dict[str, tuple[str, str]],
-        *,
-        projs: dict[str, nn.Module | None] | None = None,
-        head: nn.Module | None = None,
-        fuse_keys: tuple[str, ...] | None = None,
-    ) -> None:
-        super().__init__()
-        if len(encoders) < 2:
-            raise ValueError(
-                "MultiviewContrastiveModel expects at least two modalities "
-                "(use UnimodalModel or MultimodalModel for a single tower)."
-            )
-        enc_keys = set(encoders.keys())
-        vp_keys = set(view_pairs.keys())
-        if enc_keys != vp_keys:
-            raise ValueError(
-                f"encoders keys {sorted(enc_keys)} must match view_pairs keys {sorted(vp_keys)}"
-            )
-        self.view_pairs = {k: (view_pairs[k][0], view_pairs[k][1]) for k in sorted(view_pairs)}
-        self.encoders = nn.ModuleDict(dict(sorted(encoders.items())))
-        modalities = tuple(sorted(self.view_pairs.keys()))
-        self.proj = _module_dict_projs(modalities, projs)
-        self.head = head if head is not None else NoOpHead()
-        if fuse_keys is None:
-            self._fuse_keys = tuple(self.view_pairs[m][0] for m in modalities)
+        if self.fuse_keys is not None:
+            assert self.fused_head is not None
+            missing = [k for k in self.fuse_keys if k not in embs]
+            if missing:
+                raise KeyError(
+                    f"fuse_keys {self.fuse_keys} not in embs; missing: {missing}. "
+                    f"Available keys: {sorted(embs.keys())}"
+                )
+            fused = torch.cat([embs[k] for k in self.fuse_keys], dim=-1)
+            predictions = self.fused_head(fused)
         else:
-            self._fuse_keys = tuple(fuse_keys)
-
-    def forward(
-        self, batch: dict[str, Any]
-    ) -> tuple[torch.Tensor | dict[str, torch.Tensor], dict[str, torch.Tensor]]:
-        embs: dict[str, torch.Tensor] = {}
-        for m, (ka, kb) in self.view_pairs.items():
-            enc = self.encoders[m]
-            proj = self.proj[m]
-            for key in (ka, kb):
-                if key not in batch:
-                    raise KeyError(f"batch missing key {key!r} for modality {m!r}")
-            embs[ka] = proj(enc(batch[ka]))
-            embs[kb] = proj(enc(batch[kb]))
-
-        missing = [k for k in self._fuse_keys if k not in embs]
-        if missing:
-            raise KeyError(
-                f"fuse_keys {self._fuse_keys} not in embs; missing: {missing}. "
-                f"Available keys: {sorted(embs.keys())}"
-            )
-        fused = torch.cat([embs[k] for k in self._fuse_keys], dim=-1)
-        predictions = self.head(fused)
+            predictions = {}
         return predictions, embs
 
     def predict(self, batch: dict[str, Any]) -> torch.Tensor | dict[str, torch.Tensor]:
@@ -276,26 +290,3 @@ class MultiviewContrastiveModel(nn.Module):
     def encode(self, batch: dict[str, Any]) -> dict[str, torch.Tensor]:
         _, embs = self.forward(batch)
         return embs
-
-
-class UnifiedContrastiveModel(MultiviewContrastiveModel):
-    """Convenience wrapper: two modalities named ``m1`` and ``m2`` (see :class:`MultiviewContrastiveModel`)."""
-
-    def __init__(
-        self,
-        encoder_m1: nn.Module,
-        encoder_m2: nn.Module,
-        *,
-        proj_m1: nn.Module | None = None,
-        proj_m2: nn.Module | None = None,
-        head: nn.Module | None = None,
-        keys_m1: tuple[str, str] = ("m1", "m1_aug"),
-        keys_m2: tuple[str, str] = ("m2", "m2_aug"),
-    ) -> None:
-        super().__init__(
-            encoders={"m1": encoder_m1, "m2": encoder_m2},
-            view_pairs={"m1": keys_m1, "m2": keys_m2},
-            projs={"m1": proj_m1, "m2": proj_m2},
-            head=head,
-        )
-

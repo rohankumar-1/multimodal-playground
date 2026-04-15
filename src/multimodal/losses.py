@@ -1,7 +1,7 @@
-"""Contrastive / InfoNCE-style losses (``nn.Module`` where state is needed).
+"""Training losses (contrastive, dice, etc.).
 
-Contrastive training objectives live here; :class:`~multimodal.tasks.ContrastiveTask` and
-:class:`~multimodal.tasks.SupervisedContrastiveTask` wrap them for use with :class:`~multimodal.train.Trainer`.
+Used by :class:`~multimodal.tasks.ContrastiveTask`, :class:`~multimodal.tasks.DiceTask`, and
+similar task wrappers with :class:`~multimodal.train.Trainer`.
 """
 
 from __future__ import annotations
@@ -100,23 +100,18 @@ class SupConLoss(nn.Module):
             raise ValueError("labels must have shape [B]")
 
         features = F.normalize(features, dim=-1)
-        # [B*V, D]
         f = features.reshape(bsz * n_view, dim)
-        # Repeat each label for every view
         labels_exp = labels.view(-1, 1).expand(bsz, n_view).reshape(-1)
 
         sim = torch.matmul(f, f.T) / self.temperature
-        # Positive mask: same class, exclude self
         mask = torch.eq(labels_exp.unsqueeze(0), labels_exp.unsqueeze(1)).float()
         logits_mask = 1.0 - torch.eye(bsz * n_view, device=device)
         mask = mask * logits_mask
 
-        # For each anchor, log-softmax over all *other* positions
         exp_sim = torch.exp(sim) * logits_mask
         denom = exp_sim.sum(1, keepdim=True).clamp_min(1e-8)
         log_prob = sim - torch.log(denom)
 
-        # Mean log-prob over positive pairs (excluding self already zeroed in mask diagonal path)
         n_pos = mask.sum(1).clamp_min(1.0)
         mean_log_pos = (mask * log_prob).sum(1) / n_pos
         loss = -mean_log_pos.mean()
@@ -151,3 +146,54 @@ class CLUB(nn.Module):
         negative = -0.5 * ((y_shuffle - mu) ** 2) / var - 0.5 * logvar
 
         return -(positive.sum(dim=-1) - negative.sum(dim=-1)).mean()
+
+
+def dice_loss(logits, targets, eps=1e-6, apply_sigmoid=True):
+    if apply_sigmoid:
+        probs = torch.sigmoid(logits)
+    else:
+        probs = logits
+    probs = probs.flatten(start_dim=2)
+    targets = targets.flatten(start_dim=2).float()
+    intersection = (probs * targets).sum(dim=2)
+    denominator = probs.sum(dim=2) + targets.sum(dim=2)
+    dice = (2 * intersection + eps) / (denominator + eps)
+    return 1 - dice.mean()
+
+
+def dice_bce_loss(logits, targets, bce_weight=0.5, eps=1e-6):
+    """Dice loss combined with binary cross-entropy."""
+    bce = F.binary_cross_entropy_with_logits(logits, targets)
+    dsc = dice_loss(logits, targets, eps=eps)
+    return bce_weight * bce + (1 - bce_weight) * dsc
+
+
+def multiclass_dice_loss(logits, targets, eps=1e-6):
+    """
+    logits: [B, C, H, W]
+    targets: [B, H, W] with integer class IDs
+    """
+    probs = torch.softmax(logits, dim=1)
+    num_classes = probs.shape[1]
+
+    targets_oh = F.one_hot(targets, num_classes).permute(0, 3, 1, 2).float()
+
+    return dice_loss(
+        probs,
+        targets_oh,
+        eps=eps,
+        apply_sigmoid=False,
+    )
+
+
+__all__ = [
+    "CLUB",
+    "CriticInfoNCE",
+    "InfoNCE",
+    "SeparableCritic",
+    "SupConLoss",
+    "clip_loss",
+    "dice_bce_loss",
+    "dice_loss",
+    "multiclass_dice_loss",
+]

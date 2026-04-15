@@ -54,3 +54,28 @@ def test_contrastive_model_missing_batch_key_raises() -> None:
 def test_contrastive_model_empty_route_raises() -> None:
     with pytest.raises(ValueError, match="non-empty route"):
         ContrastiveModel(encoders={"a": nn.Identity()}, route={})
+
+
+def test_route_from_view_pairs() -> None:
+    vp = {"vision": ("image", "image_aug"), "text": ("text", "text_aug")}
+    r = ContrastiveModel.route_from_view_pairs(vp)
+    assert r == {
+        "image": "vision",
+        "image_aug": "vision",
+        "text": "text",
+        "text_aug": "text",
+    }
+    assert ContrastiveModel.fuse_keys_first_views(vp) == ("text", "image")
+
+
+def test_contrastive_model_from_view_pairs_no_fused_path() -> None:
+    m = ContrastiveModel.from_view_pairs(
+        {"a": nn.Linear(1, 1), "b": nn.Linear(1, 1)},
+        {"a": ("x", "x_aug"), "b": ("y", "y_aug")},
+        use_fused_path=False,
+    )
+    assert m.fuse_keys is None
+    assert m.fused_head is None
+    batch = {"x": torch.zeros(1, 1), "x_aug": torch.zeros(1, 1), "y": torch.zeros(1, 1), "y_aug": torch.zeros(1, 1)}
+    preds, _ = m(batch)
+    assert preds == {}

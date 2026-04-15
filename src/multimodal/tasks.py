@@ -1,14 +1,13 @@
 from __future__ import annotations
 
 from abc import abstractmethod
-from typing import Callable
+from collections.abc import Callable
 
 import torch
 import torch.nn.functional as F
 from torch import nn
 
-from multimodal.contrastive_losses import InfoNCE, SupConLoss
-from multimodal.utils import dice_bce_loss, dice_loss, multiclass_dice_loss
+from multimodal.losses import InfoNCE, SupConLoss, dice_bce_loss, dice_loss, multiclass_dice_loss
 
 
 class BaseTask:
@@ -92,9 +91,17 @@ class RegressionTask(BaseTask):
 class ContrastiveTask(BaseTask):
     """Pairwise contrastive loss on two ``embs`` keys (e.g. two modalities or two views).
 
-    By default uses symmetric :class:`~multimodal.contrastive_losses.InfoNCE`. Pass a custom
-    ``loss_fn`` (e.g. :class:`~multimodal.contrastive_losses.CriticInfoNCE`) for other
-    objectives; it will be called as ``loss_fn(embs[mod1], embs[mod2])``.
+    **Loss construction (current API).** The default is symmetric
+    :class:`~multimodal.losses.InfoNCE` driven by ``temperature``. For anything else (critic
+    InfoNCE, asymmetric temperature, custom logits), pass an ``nn.Module`` or callable as
+    ``loss_fn``; it is invoked as ``loss_fn(embs[mod1], embs[mod2])``. That keeps the task
+    thin and avoids a growing matrix of constructor flags; trainable auxiliaries (e.g. a
+    bilinear critic) live on ``loss_fn`` and should be included in the optimizer (see trainer
+    docs / future ``auxiliary_modules``-style API).
+
+    **Possible evolution.** A small factory (e.g. ``loss="infonce" | "critic"`` plus shared
+    kwargs) could wrap the same ``loss_fn`` slot for discoverability, as long as advanced
+    cases still pass a custom module unchanged.
     """
 
     def __init__(
@@ -129,7 +136,7 @@ class SupervisedContrastiveTask(BaseTask):
     """Supervised contrastive (multi-view) on stacked ``embs`` and class labels.
 
     Stacks ``embs[k]`` for each ``k`` in ``view_keys`` along a view dimension → ``[B, V, D]``,
-    then applies ``loss_module`` (default: :class:`~multimodal.contrastive_losses.SupConLoss`).
+    then applies ``loss_module`` (default: :class:`~multimodal.losses.SupConLoss`).
     ``batch[label_key]`` must be integer class ids of shape ``[B]``.
     """
 

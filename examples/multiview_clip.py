@@ -34,7 +34,7 @@ _EXAMPLES = Path(__file__).resolve().parent
 if str(_EXAMPLES) not in sys.path:
     sys.path.insert(0, str(_EXAMPLES))
 
-from multimodal.contrastive_losses import CriticInfoNCE, SeparableCritic
+from multimodal.losses import CriticInfoNCE, SeparableCritic
 from multimodal.model import ContrastiveModel
 from multimodal.tasks import ContrastiveTask
 from multimodal.train import Trainer, TrainerConfig

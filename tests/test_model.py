@@ -8,12 +8,7 @@ from torch import nn
 
 from multimodal.fusion import ConcatFusion
 from multimodal.heads import M3HHead
-from multimodal.model import (
-    MultimodalModel,
-    MultiviewContrastiveModel,
-    UnifiedContrastiveModel,
-    UnimodalModel,
-)
+from multimodal.model import ContrastiveModel, MultimodalModel, UnimodalModel
 
 
 def test_multimodal_model_forward_returns_predictions_and_embeddings() -> None:
@@ -106,30 +101,8 @@ def test_unimodal_model_forward() -> None:
     assert set(model.encoders.keys()) == {"x"}
 
 
-def test_unified_contrastive_model_four_embeddings() -> None:
-    model = UnifiedContrastiveModel(
-        nn.Linear(2, 4),
-        nn.Linear(3, 4),
-        keys_m1=("a", "a_aug"),
-        keys_m2=("b", "b_aug"),
-    )
-    b = 3
-    batch = {
-        "a": torch.randn(b, 2),
-        "a_aug": torch.randn(b, 2),
-        "b": torch.randn(b, 3),
-        "b_aug": torch.randn(b, 3),
-    }
-    preds, embs = model(batch)
-    assert preds == {}
-    assert set(embs.keys()) == {"a", "a_aug", "b", "b_aug"}
-    for t in embs.values():
-        assert t.shape == (b, 4)
-    assert set(model.encoders.keys()) == {"m1", "m2"}
-
-
-def test_multiview_contrastive_model_two_modalities() -> None:
-    model = MultiviewContrastiveModel(
+def test_contrastive_model_from_view_pairs_two_modalities() -> None:
+    model = ContrastiveModel.from_view_pairs(
         encoders={"a": nn.Linear(2, 3), "b": nn.Linear(4, 3)},
         view_pairs={"a": ("a", "a_aug"), "b": ("b", "b_aug")},
     )
@@ -147,17 +120,37 @@ def test_multiview_contrastive_model_two_modalities() -> None:
     assert set(model.encoders.keys()) == {"a", "b"}
 
 
-def test_multiview_contrastive_requires_two_modalities() -> None:
-    with pytest.raises(ValueError, match="at least two modalities"):
-        MultiviewContrastiveModel(
+def test_contrastive_model_from_view_pairs_renames_unified_keys() -> None:
+    model = ContrastiveModel.from_view_pairs(
+        encoders={"m1": nn.Linear(2, 4), "m2": nn.Linear(3, 4)},
+        view_pairs={"m1": ("a", "a_aug"), "m2": ("b", "b_aug")},
+    )
+    b = 3
+    batch = {
+        "a": torch.randn(b, 2),
+        "a_aug": torch.randn(b, 2),
+        "b": torch.randn(b, 3),
+        "b_aug": torch.randn(b, 3),
+    }
+    preds, embs = model(batch)
+    assert preds == {}
+    assert set(embs.keys()) == {"a", "a_aug", "b", "b_aug"}
+    for t in embs.values():
+        assert t.shape == (b, 4)
+    assert set(model.encoders.keys()) == {"m1", "m2"}
+
+
+def test_contrastive_from_view_pairs_requires_two_encoders() -> None:
+    with pytest.raises(ValueError, match="at least two encoders"):
+        ContrastiveModel.from_view_pairs(
             {"only": nn.Identity()},
             {"only": ("x", "x_aug")},
         )
 
 
-def test_multiview_encoder_view_pair_keys_mismatch() -> None:
+def test_contrastive_from_view_pairs_encoder_keys_must_match() -> None:
     with pytest.raises(ValueError, match="must match"):
-        MultiviewContrastiveModel(
+        ContrastiveModel.from_view_pairs(
             {"a": nn.Identity(), "b": nn.Identity()},
             {"a": ("x", "x_aug")},
         )

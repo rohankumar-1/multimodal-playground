@@ -1,11 +1,10 @@
-"""Tests for :mod:`multimodal.contrastive_losses`."""
+"""Tests for :mod:`multimodal.losses`."""
 
 from __future__ import annotations
 
 import torch
-from torch import nn
 
-from multimodal.contrastive_losses import (
+from multimodal.losses import (
     CriticInfoNCE,
     InfoNCE,
     SeparableCritic,

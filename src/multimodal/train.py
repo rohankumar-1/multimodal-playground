@@ -2,7 +2,7 @@
 from __future__ import annotations
 
 import warnings
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from pathlib import Path
 
 import torch
@@ -23,6 +23,16 @@ from multimodal.tasks import BaseTask
 
 
 @dataclass
+class DDPConfig:
+    """DistributedDataParallel and process-group options (used when DDP is enabled)."""
+
+    backend: str = "nccl"
+    find_unused_parameters: bool = False
+    static_graph: bool = False
+    sync_bn: bool = False
+
+
+@dataclass
 class TrainerConfig:
     max_epochs: int
     grad_accum_steps: int = 1
@@ -37,20 +47,17 @@ class TrainerConfig:
     #: If ``None``, sums all values whose keys end with ``"/loss"`` (multi-task total).
     checkpoint_monitor_key: str | None = None
     #: If True, set ``requires_grad=False`` on every submodule in ``model.encoders``.
-    #: When True, :attr:`freeze_encoder_modalities` is ignored.
+    #: When True, :attr:`freeze_encoder_ids` is ignored.
     freeze_all_encoders: bool = False
     #: Freeze only these **encoder tower** keys (must exist in ``model.encoders``). For
-    #: :class:`~multimodal.model.ContrastiveModel`, keys are encoder ids (e.g. ``"vision"``),
-    #: not dataloader batch keys like ``"image_aug"``. Ignored if
-    #: :attr:`freeze_all_encoders` is True.
-    freeze_encoder_modalities: tuple[str, ...] = ()
+    #: :class:`~multimodal.model.ContrastiveModel`, use encoder ids (e.g. ``"vision"``), not
+    #: dataloader batch keys like ``"image_aug"``. Ignored if :attr:`freeze_all_encoders`
+    #: is True.
+    freeze_encoder_ids: tuple[str, ...] = ()
     #: If ``None``, enable DDP when ``torchrun`` sets ``WORLD_SIZE > 1``.
     #: If ``True``, require multi-process launch; if ``False``, never wrap with DDP.
     distributed: bool | None = None
-    ddp_backend: str = "nccl"
-    ddp_find_unused_parameters: bool = False
-    ddp_static_graph: bool = False
-    ddp_sync_bn: bool = False
+    ddp: DDPConfig = field(default_factory=DDPConfig)
     #: If True, show a tqdm progress bar (rank 0 only under DDP).
     progress_bar: bool = True
     #: Decimal precision when printing metric dicts.
@@ -83,7 +90,7 @@ class Trainer:
             self._use_ddp = env is not None and env.world_size > 1
 
         if self._use_ddp:
-            init_distributed(backend=config.ddp_backend)
+            init_distributed(backend=config.ddp.backend)
             self._rank = get_rank()
             self._world_size = get_world_size()
             self._local_rank = env.local_rank if env is not None else 0
@@ -100,7 +107,7 @@ class Trainer:
 
         self._apply_encoder_freezing()
 
-        if self._use_ddp and config.ddp_sync_bn:
+        if self._use_ddp and config.ddp.sync_bn:
             self._raw_model = torch.nn.SyncBatchNorm.convert_sync_batchnorm(self._raw_model)
 
         if self._use_ddp:
@@ -114,8 +121,8 @@ class Trainer:
                 self._raw_model,
                 device_ids=dev_ids,
                 output_device=out_dev,
-                find_unused_parameters=config.ddp_find_unused_parameters,
-                static_graph=config.ddp_static_graph,
+                find_unused_parameters=config.ddp.find_unused_parameters,
+                static_graph=config.ddp.static_graph,
             )
         else:
             self.model = self._raw_model
@@ -150,10 +157,10 @@ class Trainer:
                     p.requires_grad = False
             return
 
-        for name in cfg.freeze_encoder_modalities:
+        for name in cfg.freeze_encoder_ids:
             if name not in enc:  # ty:ignore[unsupported-operator]
                 raise KeyError(
-                    f"freeze_encoder_modalities: unknown modality {name!r}; "
+                    f"freeze_encoder_ids: unknown encoder id {name!r}; "
                     f"available: {sorted(enc.keys())}"  # ty:ignore[unresolved-attribute, call-non-callable]
                 )
             for p in enc[name].parameters():  # ty:ignore[unresolved-attribute, invalid-argument-type, not-subscriptable]

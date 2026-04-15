@@ -122,7 +122,7 @@ class FashionMNISTImageTextMultiview(Dataset):
     def __len__(self) -> int:
         return len(self._raw)
 
-    def __getitem__(self, idx: int) -> dict[str, torch.Tensor]:
+    def __getitem__(self, idx: int) -> dict[str, torch.Tensor]: # ty:ignore[invalid-method-override]
         pil, target = self._raw[idx]
         name = CLASS_NAMES[int(target)]
         text = self._tokenizer.encode(name)
