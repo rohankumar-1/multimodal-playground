@@ -117,7 +117,7 @@ def main() -> None:
         clip_grad_norm=1.0,
     )
 
-    trainer = Trainer(model, tasks, optimizer, config)  # ty:ignore[invalid-argument-type]
+    trainer = Trainer(model, tasks, optimizer, config)
     print(f"Device: {device} (AMP: {use_amp})")
     trainer.train(train_loader, val_loader)
 

@@ -2,7 +2,7 @@
 from __future__ import annotations
 
 import warnings
-from collections.abc import Iterable, Iterator
+from collections.abc import Iterable, Iterator, Sequence
 from dataclasses import dataclass, field
 from pathlib import Path
 
@@ -104,7 +104,7 @@ class Trainer:
     def __init__(
         self,
         model: nn.Module,
-        tasks: list[BaseTask|nn.Module],
+        tasks: Sequence[BaseTask],
         optimizer: torch.optim.Optimizer,
         config: TrainerConfig,
     ) -> None:

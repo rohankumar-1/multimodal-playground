@@ -90,7 +90,7 @@ def main() -> None:
         metric_precision=4,
         progress_bar=True,
     )
-    trainer = Trainer(model, tasks, optimizer, config)  # ty:ignore[invalid-argument-type]
+    trainer = Trainer(model, tasks, optimizer, config)
     print(f"Data root: {root} | device={device}")
     trainer.train(train_loader, val_loader)
 
