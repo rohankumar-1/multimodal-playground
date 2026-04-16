@@ -26,7 +26,6 @@ from multimodal.tasks import BaseTask
 @dataclass
 class DDPConfig:
     """DistributedDataParallel and process-group options (used when DDP is enabled)."""
-
     backend: str = "nccl"
     find_unused_parameters: bool = False
     static_graph: bool = False
@@ -63,6 +62,10 @@ class TrainerConfig:
     progress_bar: bool = True
     #: Decimal precision when printing metric dicts.
     metric_precision: int = 4
+    #: Stop after this many consecutive epochs without validation improvement (lower
+    #: is better on the same scalar as checkpointing: :attr:`checkpoint_monitor_key`
+    #: or the sum of ``*/loss`` keys). Requires ``val_loader``. ``None`` disables.
+    patience: int | None = None
 
 
 def iter_training_parameters(
@@ -101,7 +104,7 @@ class Trainer:
     def __init__(
         self,
         model: nn.Module,
-        tasks: list[BaseTask],
+        tasks: list[BaseTask|nn.Module],
         optimizer: torch.optim.Optimizer,
         config: TrainerConfig,
     ) -> None:
@@ -163,6 +166,7 @@ class Trainer:
         self.scaler = GradScaler(enabled=config.mixed_precision)
 
         self._best_val_loss: float = float("inf")
+        self._epochs_without_improvement: int = 0
         self._warned_train_sampler: bool = False
         self._warned_val_sampler: bool = False
         self._warned_tqdm_missing: bool = False
@@ -242,6 +246,16 @@ class Trainer:
                 "checkpoint_path is set but val_loader is None; "
                 "provide a validation loader to track validation loss."
             )
+        if self.config.patience is not None:
+            if self.config.patience < 1:
+                raise ValueError("patience must be >= 1 when set.")
+            if val_loader is None:
+                raise ValueError(
+                    "patience is set but val_loader is None; "
+                    "provide a validation loader for early stopping."
+                )
+
+        self._epochs_without_improvement = 0
 
         for epoch in range(self.config.max_epochs):
             self._set_sampler_epoch(train_loader, epoch)
@@ -267,22 +281,37 @@ class Trainer:
                 if is_main_process():
                     print(f"Val:   {self._format_metrics(val_metrics)}")
 
-                if self.config.checkpoint_path:
-                    val_loss = self._validation_loss_scalar(val_metrics)
-                    if val_loss < self._best_val_loss:
-                        self._best_val_loss = val_loss
-                        self._save_checkpoint(
-                            self.config.checkpoint_path,
-                            epoch=epoch,
-                            val_metrics=val_metrics,
-                            val_loss=val_loss,
+                val_loss = self._validation_loss_scalar(val_metrics)
+                improved = val_loss < self._best_val_loss
+                if improved:
+                    self._best_val_loss = val_loss
+                    self._epochs_without_improvement = 0
+                else:
+                    self._epochs_without_improvement += 1
+
+                if self.config.checkpoint_path and improved:
+                    self._save_checkpoint(
+                        self.config.checkpoint_path,
+                        epoch=epoch,
+                        val_metrics=val_metrics,
+                        val_loss=val_loss,
+                    )
+                    if is_main_process():
+                        print(
+                            f"Saved best checkpoint (val_loss={val_loss:.6f}) "
+                            f"-> {self.config.checkpoint_path}"
                         )
+                    barrier()
+
+                if self.config.patience is not None:
+                    if self._epochs_without_improvement >= self.config.patience:
                         if is_main_process():
                             print(
-                                f"Saved best checkpoint (val_loss={val_loss:.6f}) "
-                                f"-> {self.config.checkpoint_path}"
+                                f"Early stopping: no validation improvement for "
+                                f"{self.config.patience} epoch(s) "
+                                f"(best val_loss={self._best_val_loss:.6f})."
                             )
-                        barrier()
+                        break
 
     # -----------------------------------------------------
     # One epoch pass (training or validation)
@@ -290,6 +319,8 @@ class Trainer:
     def _run_one_epoch(self, loader, train: bool):
         running_metrics = {}
         step = 0
+        loss_running_sum = 0.0
+        loss_running_count = 0
 
         self.optimizer.zero_grad(set_to_none=True)
 
@@ -328,11 +359,17 @@ class Trainer:
             for k, v in metrics.items():
                 running_metrics.setdefault(k, []).append(v)
 
+            if "loss" in metrics:
+                loss_running_sum += float(metrics["loss"])
+                loss_running_count += 1
+
             step += 1
             if pbar is not None:
                 pbar.update(1)
                 if self.config.log_every and (step % self.config.log_every == 0):
-                    postfix = self._tqdm_postfix_loss_only(metrics)
+                    postfix = self._tqdm_postfix_running_loss(
+                        loss_running_sum, loss_running_count
+                    )
                     if postfix is not None:
                         pbar.set_postfix(postfix)
 
@@ -346,15 +383,16 @@ class Trainer:
         }
         return final_metrics
 
-    def _tqdm_postfix_loss_only(
-        self, metrics: dict[str, float]
+    def _tqdm_postfix_running_loss(
+        self, loss_sum: float, loss_count: int
     ) -> dict[str, float] | None:
-        """Postfix dict for tqdm: only ``loss`` (batch total over tasks), if present."""
-        if "loss" not in metrics:
+        """Postfix for tqdm: mean ``loss`` over all batches seen so far this epoch."""
+        if loss_count <= 0:
             return None
         prec = int(self.config.metric_precision)
         try:
-            return {"loss": float(round(float(metrics["loss"]), prec))}
+            avg = loss_sum / loss_count
+            return {"loss": float(round(avg, prec))}
         except Exception:
             return None
 

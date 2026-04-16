@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import torch
 from torch import nn
-from multimodal.layers.utils import get_norm, get_activation
+from multimodal.utils import get_norm, get_activation
 from typing import Optional
 
 class ConvNormAct(nn.Module):

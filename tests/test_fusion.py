@@ -66,7 +66,7 @@ def test_bilinear_fusion_shape() -> None:
     x1 = torch.randn(b, d1)
     x2 = torch.randn(b, d2)
     fusion = BilinearFusion(x1_dim=d1, x2_dim=d2, out_dim=out_dim)
-    y = fusion(x1, x2)
+    y = fusion([x1, x2])
     assert y.shape == (b, out_dim)
 
 

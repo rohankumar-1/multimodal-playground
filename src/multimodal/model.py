@@ -6,6 +6,7 @@ import torch
 from torch import nn
 
 from multimodal.heads.basic import NoOpHead
+from multimodal.fusion.common_fusions import BaseFusion
 
 
 class MultimodalModel(nn.Module):
@@ -27,7 +28,7 @@ class MultimodalModel(nn.Module):
     def __init__(
         self,
         encoders: dict[str, nn.Module | nn.Linear],
-        fusion: nn.Module,
+        fusion: nn.Module | BaseFusion,
         head: nn.Module | nn.Linear,
         fusion_modality_order: list[str] | None = None,
     ) -> None:

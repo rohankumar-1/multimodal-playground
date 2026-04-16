@@ -1,10 +1,9 @@
-"""Multimodal Multitask Head (M3H) from https://arxiv.org/abs/2404.18975.
+"""Multimodal Multitask Head (M3H) from `Zhang et al., 2024 <https://arxiv.org/abs/2404.18975>`_.
 
-Expects a **single fused** tensor of shape ``(B, in_dim)`` (e.g. output of
-:class:`~multimodal.fusion.common_fusions.ConcatFusion` on modality embeddings).
-Returns a dict of per-task logits (linear decoders on the attended features). You can
-instead stack intermediate features and use :class:`~multimodal.heads.basic.MultiTaskLinearSliceHead`
-if you build a custom head that emits ``(B, n_tasks, attn_dim)``.
+This package implements the M3H block that turns one fused multimodal vector into
+per-task predictions using task-conditioned attention. For architectures that
+already emit a per-task tensor ``(B, T, D)``, use
+:class:`~multimodal.heads.basic.MultiTaskLinearSliceHead` (or MLP variant) instead.
 """
 
 from __future__ import annotations
@@ -15,7 +14,20 @@ from torch import nn
 
 
 class M3HHead(nn.Module):
-    """Task-wise attention over a fused multimodal vector."""
+    """Task-conditioned attention over fused features, then linear decoders.
+
+    Projects the fused input into a per-task sequence, runs attention mixing
+    controlled by learned task queries, and applies one linear classifier per task.
+
+    Args:
+        in_dim: Fused input dimension ``D`` (``x`` has shape ``(B, D)``).
+        attn_dim: Hidden dimension for per-task keys/values and decoder input.
+        out_dims: ``task_name -> C_task``; each task outputs logits of size ``C_task``.
+        alpha: Scales the attention-derived mixing term before softmax.
+
+    Input / output:
+        ``x`` of shape ``(B, in_dim)``. Returns ``{task: (B, out_dims[task])}``.
+    """
 
     def __init__(self, in_dim: int, attn_dim: int, out_dims: dict[str, int], alpha: float = 1.0) -> None:
         super().__init__()
@@ -45,7 +57,6 @@ class M3HHead(nn.Module):
         )
 
     def forward(self, x: torch.Tensor) -> dict[str, torch.Tensor]:
-        """Map fused ``x`` of shape ``(B, in_dim)`` to per-task logits."""
         x = torch.einsum("b i, t o i -> b t o", x, self.proj_W)
         b, t, d = x.shape
 

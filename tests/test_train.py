@@ -69,6 +69,57 @@ def test_trainer_with_val_loader() -> None:
     trainer.train(train_loader, val_loader=val_loader)
 
 
+def test_trainer_patience_requires_val_loader() -> None:
+    model = MultimodalModel(
+        {"x": nn.Linear(1, 2)},
+        ConcatFusion(dim=-1),
+        MultiTaskLinearHead(2, {"cls": 2}),
+        fusion_modality_order=["x"],
+    )
+    tasks: list[BaseTask] = [ClassificationTask("cls", "labels")]
+    opt = torch.optim.SGD(model.parameters(), lr=0.01)
+    cfg = TrainerConfig(
+        max_epochs=5,
+        grad_accum_steps=1,
+        mixed_precision=False,
+        device="cpu",
+        patience=2,
+        progress_bar=False,
+    )
+    trainer = Trainer(model, tasks, opt, cfg)
+    with pytest.raises(ValueError, match="val_loader"):
+        trainer.train([{"x": torch.randn(2, 1), "labels": torch.tensor([0, 1])}])
+
+
+def test_trainer_patience_stops_early() -> None:
+    """Val loss is deterministic on fixed data; after first epoch it plateaus -> early stop."""
+    torch.manual_seed(0)
+    model = MultimodalModel(
+        {"x": nn.Linear(3, 4)},
+        ConcatFusion(dim=-1),
+        MultiTaskLinearHead(4, {"cls": 2}),
+        fusion_modality_order=["x"],
+    )
+    tasks: list[BaseTask] = [ClassificationTask("cls", "labels")]
+    opt = torch.optim.SGD(model.parameters(), lr=0.0)
+    cfg = TrainerConfig(
+        max_epochs=20,
+        grad_accum_steps=1,
+        mixed_precision=False,
+        device="cpu",
+        patience=2,
+        progress_bar=False,
+    )
+    trainer = Trainer(model, tasks, opt, cfg)
+
+    train_loader = [{"x": torch.randn(4, 3), "labels": torch.tensor([0, 1, 0, 1])}]
+    val_loader = [{"x": torch.randn(4, 3), "labels": torch.tensor([1, 0, 1, 0])}]
+    trainer.train(train_loader, val_loader=val_loader)
+
+    assert trainer._epochs_without_improvement >= cfg.patience
+    assert trainer._best_val_loss < float("inf")
+
+
 def test_trainer_checkpoint_requires_val_loader() -> None:
     model = MultimodalModel(
         {"x": nn.Linear(1, 2)},
