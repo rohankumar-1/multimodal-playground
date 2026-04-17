@@ -19,4 +19,4 @@ __all__ = [
     "reduce_mean_dict",
     "wrap_loader_with_distributed_sampler",
 ]
-__version__ = "0.1.1"
+__version__ = "0.1.2"
