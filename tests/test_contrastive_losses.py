@@ -39,15 +39,15 @@ def test_supervised_contrastive_task_stack_and_loss() -> None:
     }
     batch = {"y": torch.tensor([0, 1, 0, 1])}
     task = SupervisedContrastiveTask("sup", ("a", "b"), "y", temperature=0.1)
-    loss, metrics = task.compute_loss({}, embs, batch)
+    loss = task.compute_loss({}, embs, batch)
     assert loss.ndim == 0
-    assert "sup/loss" in metrics
+    assert torch.isfinite(loss)
 
 
 def test_contrastive_task_default_infonce() -> None:
     embs = {"x": torch.randn(4, 8), "y": torch.randn(4, 8)}
     task = ContrastiveTask("c", "x", "y", temperature=0.1)
-    loss, metrics = task.compute_loss({}, embs, {})
+    loss = task.compute_loss({}, embs, {})
     assert loss.ndim == 0
 
 
@@ -78,9 +78,9 @@ def test_factorcl_supervised_task_finite_and_metrics() -> None:
         temperature=0.1,
         club_lambda=0.5,
     )
-    loss, metrics = task.compute_loss({}, embs, batch)
+    loss = task.compute_loss({}, embs, batch)
     assert loss.ndim == 0
     assert torch.isfinite(loss)
-    assert "fac/loss" in metrics
-    assert "fac/shared" in metrics
-    assert "fac/club_cond" in metrics
+    m = task.compute_metrics({}, embs, batch)
+    assert "fac/shared" in m
+    assert "fac/club_cond" in m

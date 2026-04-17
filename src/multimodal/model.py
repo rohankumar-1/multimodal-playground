@@ -5,8 +5,8 @@ from typing import Any
 import torch
 from torch import nn
 
-from multimodal.heads.basic import NoOpHead
 from multimodal.fusion.common_fusions import BaseFusion
+from multimodal.heads.basic import NoOpHead
 
 
 class MultimodalModel(nn.Module):

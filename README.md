@@ -38,7 +38,7 @@ from torch import nn
 from multimodal.fusion import ConcatFusion
 from multimodal.heads import MultiTaskLinearHead
 from multimodal.model import MultimodalModel
-from multimodal.tasks import ClassificationTask
+from multimodal.tasks import MultiClassTask
 from multimodal.train import Trainer, TrainerConfig, iter_training_parameters
 
 
@@ -73,8 +73,8 @@ assert preds["topic"].shape == (16, n_topic)
 logits_only = model.predict(batch)  # dict with the same two keys, no embeddings
 
 tasks = [
-    ClassificationTask("sentiment", "sentiment_y"),
-    ClassificationTask("topic", "topic_y"),
+    MultiClassTask("sentiment", "sentiment_y"),
+    MultiClassTask("topic", "topic_y"),
 ]
 
 optimizer = torch.optim.Adam(iter_training_parameters(model, tasks), lr=1e-3)
@@ -97,6 +97,8 @@ val_loader = [
 ]
 trainer.train(train_loader, val_loader=val_loader)
 ```
+
+Use **`BinaryClassTask`** for binary targets in ``{0, 1}`` (BCE; threshold accuracy; validation **AUC** on the score when both classes appear). Use **`MultiClassTask`** for mutually exclusive ``K``-way labels (softmax cross-entropy; validation **macro AUC-OVR**, **macro AUC-OVO**, and **auc** = their average). Use **`MultiLabelClass`** for independent labels (BCE per entry on ``[B, L]`` multi-hot targets).
 
 For GPU training, set `device="cuda"` and `mixed_precision=True` in `TrainerConfig` (requires a CUDA device).
 

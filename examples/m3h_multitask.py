@@ -19,7 +19,7 @@ from torch.utils.data import DataLoader, Dataset
 from multimodal.fusion import ConcatFusion
 from multimodal.heads import M3HHead
 from multimodal.model import MultimodalModel
-from multimodal.tasks import ClassificationTask
+from multimodal.tasks import MultiClassTask
 from multimodal.train import Trainer, TrainerConfig
 
 
@@ -103,8 +103,8 @@ def main() -> None:
     )
 
     tasks = [
-        ClassificationTask("sentiment", "sentiment_target"),
-        ClassificationTask("topic", "topic_target"),
+        MultiClassTask("sentiment", "sentiment_target"),
+        MultiClassTask("topic", "topic_target"),
     ]
 
     optimizer = torch.optim.Adam(model.parameters(), lr=1e-3)

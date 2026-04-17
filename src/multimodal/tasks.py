@@ -3,8 +3,10 @@ from __future__ import annotations
 from abc import abstractmethod
 from collections.abc import Callable
 
+import numpy as np
 import torch
 import torch.nn.functional as F
+from sklearn.metrics import roc_auc_score
 from torch import nn
 
 from multimodal.losses import (
@@ -18,9 +20,23 @@ from multimodal.losses import (
 
 
 class BaseTask:
-    def __init__(self, name: str, weight: float = 1.0):
+    """One training objective: a weighted scalar loss plus optional validation metrics.
+
+    :meth:`compute_loss` is used on every train and val step for the optimization target.
+    :meth:`compute_metrics` is called only during validation (see :class:`~multimodal.train.Trainer`)
+    for detached diagnostics (accuracy, RMSE, loss decompositions, etc.).
+    """
+
+    def __init__(self, name: str, weight: float = 1.0) -> None:
         self.name = name
         self.weight = weight
+
+    def logged_loss_scalar(self, weighted_loss: torch.Tensor) -> float:
+        """Unweighted loss scalar for logging (``weighted_loss / weight``)."""
+        w = float(self.weight)
+        if w != 0.0:
+            return float((weighted_loss.detach() / w).item())
+        return float(weighted_loss.detach().item())
 
     def trainable_loss_modules(self) -> tuple[nn.Module, ...]:
         """Extra :class:`~torch.nn.Module` objects whose parameters should train with the model.
@@ -33,29 +49,118 @@ class BaseTask:
         return ()
 
     @abstractmethod
-    def compute_loss(self, preds, embs, batch) -> tuple[torch.Tensor, dict[str, float]]:
-        pass
+    def compute_loss(self, preds, embs, batch) -> torch.Tensor:
+        """Weighted scalar loss used for backpropagation."""
+        raise NotImplementedError("Subclasses must implement compute_loss")
+
+    def compute_metrics(self, preds, embs, batch) -> dict[str, float]:
+        """Validation-only diagnostics (accuracy, decomposed losses, etc.)."""
+        return {}
 
 
-class ClassificationTask(BaseTask):
+class BinaryClassTask(BaseTask):
+    """Binary classification with :func:`~torch.nn.functional.binary_cross_entropy_with_logits`.
+
+    Logits may be ``[B]``, ``[B, 1]``, or ``[B, 2]``. For two columns the score is
+    ``logits[:, 1] - logits[:, 0]`` (log-odds for class 1). Accuracy uses
+    ``sigmoid(score) > 0.5``, not :func:`~torch.argmax`.
+
+    Targets must be in ``{0, 1}`` (``float`` or ``long``). Validation adds ``auc`` when
+    both classes appear in the batch (``sklearn.metrics.roc_auc_score`` on the score ``z``).
+    """
+
+    @staticmethod
+    def _binary_scores(logits: torch.Tensor) -> torch.Tensor:
+        if logits.dim() == 1:
+            return logits
+        if logits.dim() == 2:
+            if logits.shape[1] == 1:
+                return logits.squeeze(-1)
+            if logits.shape[1] == 2:
+                return logits[:, 1] - logits[:, 0]
+        raise ValueError(
+            f"BinaryClassTask expects logits shaped [B], [B, 1], or [B, 2]; "
+            f"got {tuple(logits.shape)}."
+        )
+
     def __init__(self, name, target_key, weight=1.0):
         super().__init__(name, weight)
         self.target_key = target_key
 
     def compute_loss(self, preds, embs, batch):
-        logits = preds[self.name]             # shape: [B, C]
-        target = batch[self.target_key]       # shape: [B]
+        logits = preds[self.name]
+        z = self._binary_scores(logits)
+        target = batch[self.target_key].float().view_as(z)
+        loss = F.binary_cross_entropy_with_logits(z, target)
+        return loss * self.weight
 
+    def compute_metrics(self, preds, embs, batch) -> dict[str, float]:
+        logits = preds[self.name]
+        z = self._binary_scores(logits)
+        target = batch[self.target_key].float().view_as(z)
+        pred = (torch.sigmoid(z) > 0.5).float()
+        acc = (pred == target).float().mean()
+        out: dict[str, float] = {f"{self.name}/acc": acc.item()}
+        yt = target.detach().cpu().numpy().astype(np.int64).ravel()
+        ys = z.detach().cpu().numpy().astype(np.float64).ravel()
+        if np.unique(yt).size >= 2:
+            try:
+                out[f"{self.name}/auc"] = float(roc_auc_score(yt, ys))
+            except ValueError:
+                pass
+        return out
+
+
+class MultiClassTask(BaseTask):
+    """``K``-way mutually exclusive classification: softmax cross-entropy and argmax accuracy.
+
+    ``preds[name]`` is ``[B, K]`` logits; ``batch[target_key]`` is integer class ids ``[B]``.
+    Validation reports macro-averaged ``auc_ovr`` and ``auc_ovo`` on softmax probabilities,
+    and ``auc`` as their mean.
+    """
+
+    def __init__(self, name, target_key, weight=1.0):
+        super().__init__(name, weight)
+        self.target_key = target_key
+
+    def compute_loss(self, preds, embs, batch):
+        logits = preds[self.name]
+        target = batch[self.target_key]
+        if target.dtype.is_floating_point:
+            target = target.long()
         loss = F.cross_entropy(logits, target)
+        return loss * self.weight
 
+    def compute_metrics(self, preds, embs, batch) -> dict[str, float]:
+        logits = preds[self.name]
+        target = batch[self.target_key]
+        if target.dtype.is_floating_point:
+            target = target.long()
         pred_labels = logits.argmax(dim=1)
         acc = (pred_labels == target).float().mean()
+        out: dict[str, float] = {f"{self.name}/acc": acc.item()}
+        probs = F.softmax(logits, dim=1).detach().cpu().numpy()
+        y = target.detach().cpu().numpy().astype(np.int64)
+        k = logits.shape[1]
+        if k >= 2 and np.unique(y).size >= 2:
+            try:
+                auc_ovr = float(roc_auc_score(y, probs, multi_class="ovr", average="macro"))
+                auc_ovo = float(roc_auc_score(y, probs, multi_class="ovo", average="macro"))
+                out[f"{self.name}/auc_ovr"] = auc_ovr
+                out[f"{self.name}/auc_ovo"] = auc_ovo
+                out[f"{self.name}/auc"] = (auc_ovr + auc_ovo) / 2.0
+            except ValueError:
+                pass
+        return out
 
-        metrics = {f"{self.name}/loss": loss.item(), f"{self.name}/acc": acc.item()}
-        return loss * self.weight, metrics
 
+class MultiLabelClass(BaseTask):
+    """Multi-label classification: independent sigmoid + BCE per label (``[B, L]`` logits/targets).
 
-class MultiLabelTask(BaseTask):
+    Targets are floats in ``[0, 1]`` (e.g. multi-hot). Metrics: Hamming accuracy; if each
+    row is (approximately) one-hot, also ``acc`` as ``argmax`` agreement vs targets.
+    """
+
     def __init__(self, name, target_key, weight=1.0):
         super().__init__(name, weight)
         self.target_key = target_key
@@ -65,9 +170,24 @@ class MultiLabelTask(BaseTask):
         target = batch[self.target_key].float()
 
         loss = F.binary_cross_entropy_with_logits(logits, target)
+        return loss * self.weight
 
-        metrics = {f"{self.name}/loss": loss.item()}
-        return loss * self.weight, metrics
+    def compute_metrics(self, preds, embs, batch) -> dict[str, float]:
+        logits = preds[self.name]
+        target = batch[self.target_key].float()
+        probs = torch.sigmoid(logits)
+        pred_bin = (probs > 0.5).float()
+        hamming = (pred_bin == target).float().mean()
+        out: dict[str, float] = {f"{self.name}/hamming_acc": hamming.item()}
+        if target.dim() == 2:
+            row_sums = target.sum(dim=1)
+            if bool(torch.all(row_sums > 0.99) and torch.all(row_sums < 1.01)):
+                top1 = (logits.argmax(dim=1) == target.argmax(dim=1)).float().mean()
+                out[f"{self.name}/acc"] = top1.item()
+            else:
+                subset = (pred_bin == target).all(dim=1).float().mean()
+                out[f"{self.name}/subset_acc"] = subset.item()
+        return out
 
 
 class MultiTaskTask(BaseTask):
@@ -76,18 +196,24 @@ class MultiTaskTask(BaseTask):
         self.head_to_target = head_to_target
 
     def compute_loss(self, preds, embs, batch):
-        total = 0
-        metrics = {}
-
+        total: torch.Tensor | None = None
         for head_name, target_key in self.head_to_target.items():
             head_logits = preds[head_name]
             target = batch[target_key]
             loss = F.cross_entropy(head_logits, target)
+            total = loss if total is None else total + loss
+        if total is None:
+            raise ValueError("MultiTaskTask requires at least one head_to_target entry")
+        return total * self.weight
 
-            total += loss
+    def compute_metrics(self, preds, embs, batch) -> dict[str, float]:
+        metrics: dict[str, float] = {}
+        for head_name, target_key in self.head_to_target.items():
+            head_logits = preds[head_name]
+            target = batch[target_key]
+            loss = F.cross_entropy(head_logits, target)
             metrics[f"{head_name}/loss"] = loss.item()
-
-        return total * self.weight, metrics
+        return metrics
 
 
 class RegressionTask(BaseTask):
@@ -100,21 +226,24 @@ class RegressionTask(BaseTask):
         target = batch[self.target_key]
 
         loss = F.mse_loss(pred, target)
+        return loss * self.weight
 
-        metrics = {f"{self.name}/rmse": loss.sqrt().item()}
-        return loss * self.weight, metrics
+    def compute_metrics(self, preds, embs, batch) -> dict[str, float]:
+        pred = preds[self.name]
+        target = batch[self.target_key]
+        loss = F.mse_loss(pred, target)
+        return {f"{self.name}/rmse": loss.sqrt().item()}
 
 
 class ContrastiveTask(BaseTask):
     """Pairwise contrastive loss on two ``embs`` keys (e.g. two modalities or two views).
 
-    **Loss construction (current API).** The default is symmetric
-    :class:`~multimodal.losses.InfoNCE` driven by ``temperature``. For anything else (critic
-    InfoNCE, asymmetric temperature, custom logits), pass an ``nn.Module`` or callable as
-    ``loss_fn``; it is invoked as ``loss_fn(embs[mod1], embs[mod2])``. That keeps the task
-    thin and avoids a growing matrix of constructor flags; trainable auxiliaries (e.g. a
-    bilinear critic) live on ``loss_fn``. Pass :func:`~multimodal.train.iter_training_parameters`
-    ``(model, tasks, …)`` into your optimizer so those weights are updated (see
+    **Loss construction (current API).** :meth:`compute_loss` returns the weighted scalar
+    loss only. The default is symmetric :class:`~multimodal.losses.InfoNCE` driven by
+    ``temperature``. For anything else (critic InfoNCE, asymmetric temperature, custom logits),
+    pass an ``nn.Module`` or callable as ``loss_fn``; it is invoked as
+    ``loss_fn(embs[mod1], embs[mod2])``. Trainable auxiliaries live on ``loss_fn``; include
+    them via :func:`~multimodal.train.iter_training_parameters` (see
     :meth:`trainable_loss_modules`).
 
     **Possible evolution.** A small factory (e.g. ``loss="infonce" | "critic"`` plus shared
@@ -151,8 +280,7 @@ class ContrastiveTask(BaseTask):
         z1 = embs[self.mod1]
         z2 = embs[self.mod2]
         loss = self.loss_fn(z1, z2)
-        metrics = {f"{self.name}/loss": loss.item()}
-        return loss * self.weight, metrics
+        return loss * self.weight
 
 
 class SupervisedContrastiveTask(BaseTask):
@@ -195,8 +323,7 @@ class SupervisedContrastiveTask(BaseTask):
         z = torch.stack([embs[k] for k in self.view_keys], dim=1)
         labels = batch[self.label_key].long()
         loss = self.loss_module(z, labels)
-        metrics = {f"{self.name}/loss": loss.item()}
-        return loss * self.weight, metrics
+        return loss * self.weight
 
 
 class FactorCLSupervisedTask(BaseTask):
@@ -253,7 +380,9 @@ class FactorCLSupervisedTask(BaseTask):
     def trainable_loss_modules(self) -> tuple[nn.Module, ...]:
         return (self.label_embed, self.infonce, self.club, self.club_cond)
 
-    def compute_loss(self, preds, embs, batch):
+    def _factorcl_terms(
+        self, embs: dict[str, torch.Tensor], batch: dict
+    ) -> tuple[torch.Tensor, dict[str, torch.Tensor]]:
         if self.x1_key not in embs:
             raise KeyError(f"{self.__class__.__name__}: embs missing x1_key {self.x1_key!r}")
         if self.x2_key not in embs:
@@ -294,7 +423,6 @@ class FactorCLSupervisedTask(BaseTask):
             )
         y_emb = self.label_embed(y)
 
-        # InfoNCE terms (InfoNCE normalizes internally).
         l_shared = self.infonce(z1, z2)
         l_x1y = self.infonce(z1, y_emb)
         l_x2y = self.infonce(z2, y_emb)
@@ -303,7 +431,6 @@ class FactorCLSupervisedTask(BaseTask):
         z2_cond = torch.cat([z2, y_emb], dim=-1)
         l_cond = self.infonce(z1_cond, z2_cond)
 
-        # CLUB penalties (optionally normalize first to match the user's flow).
         if self.normalize_inputs_for_club:
             z1c = F.normalize(z1, dim=-1)
             z2c = F.normalize(z2, dim=-1)
@@ -318,17 +445,25 @@ class FactorCLSupervisedTask(BaseTask):
         total = l_shared + l_x1y + l_x2y + l_cond - self.club_lambda * (
             l_club + l_club_cond
         )
-
-        metrics = {
-            f"{self.name}/loss": float(total.detach().item()),
-            f"{self.name}/shared": float(l_shared.detach().item()),
-            f"{self.name}/x1y": float(l_x1y.detach().item()),
-            f"{self.name}/x2y": float(l_x2y.detach().item()),
-            f"{self.name}/cond": float(l_cond.detach().item()),
-            f"{self.name}/club": float(l_club.detach().item()),
-            f"{self.name}/club_cond": float(l_club_cond.detach().item()),
+        parts = {
+            "shared": l_shared,
+            "x1y": l_x1y,
+            "x2y": l_x2y,
+            "cond": l_cond,
+            "club": l_club,
+            "club_cond": l_club_cond,
         }
-        return total * self.weight, metrics
+        return total, parts
+
+    def compute_loss(self, preds, embs, batch):
+        total, _ = self._factorcl_terms(embs, batch)
+        return total * self.weight
+
+    def compute_metrics(self, preds, embs, batch) -> dict[str, float]:
+        _, parts = self._factorcl_terms(embs, batch)
+        return {
+            f"{self.name}/{key}": float(val.detach().item()) for key, val in parts.items()
+        }
 
 
 class ReconstructionTask(BaseTask):
@@ -344,9 +479,7 @@ class ReconstructionTask(BaseTask):
         x = batch[self.target_key]
 
         loss = F.mse_loss(x_hat, x)
-
-        metrics = {f"{self.name}/loss": loss.item()}
-        return loss * self.weight, metrics
+        return loss * self.weight
 
 
 class DiceTask(BaseTask):
@@ -374,8 +507,21 @@ class DiceTask(BaseTask):
                 eps=self.eps
             )
 
-        metrics = {f"{self.name}/dice_loss": loss.item()}
-        return loss * self.weight, metrics
+        return loss * self.weight
+
+    def compute_metrics(self, preds, embs, batch) -> dict[str, float]:
+        logits = preds[self.name]
+        targets = batch[self.target_key]
+        if self.bce_weight is None:
+            loss = dice_loss(logits, targets, eps=self.eps)
+        else:
+            loss = dice_bce_loss(
+                logits,
+                targets,
+                bce_weight=self.bce_weight,
+                eps=self.eps,
+            )
+        return {f"{self.name}/dice_loss": loss.item()}
 
 
 class MultiClassDiceTask(BaseTask):
@@ -388,6 +534,10 @@ class MultiClassDiceTask(BaseTask):
         targets = batch[self.target_key]
 
         loss = multiclass_dice_loss(logits, targets)
+        return loss * self.weight
 
-        metrics = {f"{self.name}/dice_loss": loss.item()}
-        return loss * self.weight, metrics
+    def compute_metrics(self, preds, embs, batch) -> dict[str, float]:
+        logits = preds[self.name]
+        targets = batch[self.target_key]
+        loss = multiclass_dice_loss(logits, targets)
+        return {f"{self.name}/dice_loss": loss.item()}

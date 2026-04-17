@@ -421,9 +421,9 @@ class Trainer:
             metrics: dict[str, float] = {}
 
             for task in self.tasks:
-                task_loss, task_metrics = task.compute_loss(preds, embs, batch)
+                task_loss = task.compute_loss(preds, embs, batch)
                 total_loss = total_loss + task_loss
-                metrics.update(task_metrics)
+                metrics[f"{task.name}/loss"] = task.logged_loss_scalar(task_loss)
 
             metrics["loss"] = float(total_loss.detach().item())
 
@@ -455,9 +455,10 @@ class Trainer:
         total_loss = torch.zeros((), device=p0.device, dtype=p0.dtype)
 
         for task in self.tasks:
-            task_loss, task_metrics = task.compute_loss(preds, embs, batch)
+            task_loss = task.compute_loss(preds, embs, batch)
             total_loss = total_loss + task_loss
-            metrics_out.update(task_metrics)
+            metrics_out[f"{task.name}/loss"] = task.logged_loss_scalar(task_loss)
+            metrics_out.update(task.compute_metrics(preds, embs, batch))
 
         metrics_out["loss"] = float(total_loss.detach().item())
         return metrics_out

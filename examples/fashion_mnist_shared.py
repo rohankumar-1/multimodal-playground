@@ -79,17 +79,18 @@ class FashionMNISTWithText(Dataset):
         image, target = self._ds[idx]
         name = CLASS_NAMES[int(target)]
         text_ids = self._tokenizer.encode(name)
+        t = torch.tensor(int(target), dtype=torch.long)
         return {
             self._image_key: image,
             self._text_key: text_ids,
-            "target": torch.tensor(target, dtype=torch.long),
+            "target": t,
         }
 
 
 class FashionMNISTImageTextMultiview(Dataset):
     """Fashion-MNIST with **image + text**, each with an augmented view (FactorCL / multiview).
 
-    Batch keys: ``image``, ``image_aug``, ``text``, ``text_aug``, plus ``target``.
+    Batch keys: ``image``, ``image_aug``, ``text``, ``text_aug``, and ``target`` (class id).
     Text augmentation is random token masking (positions set to padding id 0).
     """
 
@@ -130,12 +131,13 @@ class FashionMNISTImageTextMultiview(Dataset):
         if self._text_mask_prob > 0:
             mask = torch.rand(text_aug.numel()) < self._text_mask_prob
             text_aug[mask] = 0
+        t = torch.tensor(int(target), dtype=torch.long)
         return {
             "image": self._to_tensor(pil),
             "image_aug": self._aug(pil),
             "text": text,
             "text_aug": text_aug,
-            "target": torch.tensor(int(target), dtype=torch.long),
+            "target": t,
         }
 
 
@@ -169,10 +171,11 @@ class FashionMNISTTwoView(Dataset):
 
     def __getitem__(self, idx: int) -> dict[str, torch.Tensor]: # ty:ignore[invalid-method-override]
         pil, target = self._raw[idx]
+        t = torch.tensor(int(target), dtype=torch.long)
         return {
             "image": self._to_tensor(pil),
             "image_aug": self._aug(pil),
-            "target": torch.tensor(int(target), dtype=torch.long),
+            "target": t,
         }
 
 

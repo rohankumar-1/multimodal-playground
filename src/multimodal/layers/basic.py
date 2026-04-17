@@ -9,7 +9,7 @@ from torch import nn
 try:
     from torchvision.ops import MLP as _TorchvisionMLP  # type: ignore[import-untyped]
 except Exception:  # pragma: no cover
-    _TorchvisionMLP = None
+    _TorchvisionMLP: type[nn.Module] | None = None
 
 
 class _MLPFallback(nn.Module):

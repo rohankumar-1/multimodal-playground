@@ -2,23 +2,24 @@ from __future__ import annotations
 
 import torch
 from torch import nn
-from multimodal.utils import get_norm, get_activation
-from typing import Optional
+
+from multimodal.utils import get_activation, get_norm
+
 
 class ConvNormAct(nn.Module):
     """
     Unified block for 1D, 2D, and 3D convs.
     """
     def __init__(
-        self, 
-        in_channels: int, 
-        out_channels: int, 
+        self,
+        in_channels: int,
+        out_channels: int,
         kernel_size: int,
         stride: int = 1,
-        padding: Optional[int] = None,
+        padding: int | None = None,
         dim: int = 2,
-        norm: Optional[str] = "bn",
-        act: Optional[str] = "relu",
+        norm: str | None = "bn",
+        act: str | None = "relu",
         groups: int = 1,
     ):
         super().__init__()
@@ -60,7 +61,15 @@ class ResidualBlock(nn.Module):
     """
     Standard 2-layer residual block, works for 1D/2D/3D inputs.
     """
-    def __init__(self, in_channels: int, out_channels: int, dim: int = 2, stride: int = 1, norm: Optional[str] = "bn", act: Optional[str] = "relu"):
+    def __init__(
+        self,
+        in_channels: int,
+        out_channels: int,
+        dim: int = 2,
+        stride: int = 1,
+        norm: str | None = "bn",
+        act: str | None = "relu",
+    ) -> None:
         super().__init__()
         self.dim = dim
 
@@ -103,7 +112,7 @@ class BottleneckBlock(nn.Module):
             if in_channels != out_channels * self.expansion or stride != 1
             else nn.Identity()
         )
-        
+
         self.act = get_activation(act)
 
     def forward(self, x: torch.Tensor) -> torch.Tensor:

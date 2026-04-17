@@ -14,7 +14,7 @@ Typical losses (via multiple :class:`~multimodal.tasks.ContrastiveTask`):
 Data: :class:`FashionMNISTImageTextMultiview` in ``fashion_mnist_shared`` (image aug +
 random token masking for text).
 
-For **image–text CLIP-style** training without per-modality aug views, see
+For **image-text CLIP-style** training without per-modality aug views, see
 ``clip_style_contrastive.py``.
 
 Run::

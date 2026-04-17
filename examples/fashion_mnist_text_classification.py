@@ -35,7 +35,7 @@ from fashion_mnist_shared import (
 
 from multimodal.fusion import ConcatFusion
 from multimodal.model import MultimodalModel
-from multimodal.tasks import ClassificationTask
+from multimodal.tasks import MultiClassTask
 from multimodal.train import Trainer, TrainerConfig
 
 class ClsHead(nn.Module):
@@ -78,7 +78,7 @@ def main() -> None:
         fusion_modality_order=["vision", "text"],
     )
 
-    tasks = [ClassificationTask("cls", "target")]
+    tasks = [MultiClassTask("cls", "target")]
     device = "cuda" if torch.cuda.is_available() else "cpu"
     use_amp = device == "cuda"
 

@@ -11,7 +11,7 @@ from torch import nn
 from multimodal.fusion import ConcatFusion
 from multimodal.heads import MultiTaskLinearHead
 from multimodal.model import MultimodalModel
-from multimodal.tasks import BaseTask, ClassificationTask, ContrastiveTask
+from multimodal.tasks import BaseTask, BinaryClassTask, ContrastiveTask, MultiClassTask
 from multimodal.train import Trainer, TrainerConfig, iter_training_parameters
 
 
@@ -32,7 +32,7 @@ def test_trainer_single_epoch_classification() -> None:
         MultiTaskLinearHead(8, {"cls": 3}),
         fusion_modality_order=["v", "t"],
     )
-    tasks: list[BaseTask] = [ClassificationTask("cls", "labels")]
+    tasks: list[BaseTask] = [MultiClassTask("cls", "labels")]
     opt = torch.optim.SGD(model.parameters(), lr=0.5)
     trainer = Trainer(model, tasks, opt, _cpu_config(max_epochs=1))
 
@@ -53,10 +53,10 @@ def test_trainer_with_val_loader() -> None:
     model = MultimodalModel(
         {"x": nn.Linear(3, 4)},
         ConcatFusion(dim=-1),
-        MultiTaskLinearHead(4, {"cls": 2}),
+        MultiTaskLinearHead(4, {"cls": 1}),
         fusion_modality_order=["x"],
     )
-    tasks: list[BaseTask] = [ClassificationTask("cls", "labels")]
+    tasks: list[BaseTask] = [BinaryClassTask("cls", "labels")]
     opt = torch.optim.SGD(model.parameters(), lr=0.01)
     trainer = Trainer(model, tasks, opt, _cpu_config(max_epochs=1))
 
@@ -73,10 +73,10 @@ def test_trainer_patience_requires_val_loader() -> None:
     model = MultimodalModel(
         {"x": nn.Linear(1, 2)},
         ConcatFusion(dim=-1),
-        MultiTaskLinearHead(2, {"cls": 2}),
+        MultiTaskLinearHead(2, {"cls": 1}),
         fusion_modality_order=["x"],
     )
-    tasks: list[BaseTask] = [ClassificationTask("cls", "labels")]
+    tasks: list[BaseTask] = [BinaryClassTask("cls", "labels")]
     opt = torch.optim.SGD(model.parameters(), lr=0.01)
     cfg = TrainerConfig(
         max_epochs=5,
@@ -97,10 +97,10 @@ def test_trainer_patience_stops_early() -> None:
     model = MultimodalModel(
         {"x": nn.Linear(3, 4)},
         ConcatFusion(dim=-1),
-        MultiTaskLinearHead(4, {"cls": 2}),
+        MultiTaskLinearHead(4, {"cls": 1}),
         fusion_modality_order=["x"],
     )
-    tasks: list[BaseTask] = [ClassificationTask("cls", "labels")]
+    tasks: list[BaseTask] = [BinaryClassTask("cls", "labels")]
     opt = torch.optim.SGD(model.parameters(), lr=0.0)
     cfg = TrainerConfig(
         max_epochs=20,
@@ -116,7 +116,7 @@ def test_trainer_patience_stops_early() -> None:
     val_loader = [{"x": torch.randn(4, 3), "labels": torch.tensor([1, 0, 1, 0])}]
     trainer.train(train_loader, val_loader=val_loader)
 
-    assert trainer._epochs_without_improvement >= cfg.patience
+    assert cfg.patience is not None and trainer._epochs_without_improvement >= cfg.patience
     assert trainer._best_val_loss < float("inf")
 
 
@@ -124,10 +124,10 @@ def test_trainer_checkpoint_requires_val_loader() -> None:
     model = MultimodalModel(
         {"x": nn.Linear(1, 2)},
         ConcatFusion(dim=-1),
-        MultiTaskLinearHead(2, {"cls": 2}),
+        MultiTaskLinearHead(2, {"cls": 1}),
         fusion_modality_order=["x"],
     )
-    tasks: list[BaseTask] = [ClassificationTask("cls", "labels")]
+    tasks: list[BaseTask] = [BinaryClassTask("cls", "labels")]
     opt = torch.optim.SGD(model.parameters(), lr=0.01)
     cfg = TrainerConfig(
         max_epochs=1,
@@ -146,10 +146,10 @@ def test_trainer_saves_checkpoint_on_val(tmp_path: Path) -> None:
     model = MultimodalModel(
         {"x": nn.Linear(3, 4)},
         ConcatFusion(dim=-1),
-        MultiTaskLinearHead(4, {"cls": 2}),
+        MultiTaskLinearHead(4, {"cls": 1}),
         fusion_modality_order=["x"],
     )
-    tasks: list[BaseTask] = [ClassificationTask("cls", "labels")]
+    tasks: list[BaseTask] = [BinaryClassTask("cls", "labels")]
     opt = torch.optim.SGD(model.parameters(), lr=0.01)
     cfg = TrainerConfig(
         max_epochs=1,
@@ -179,7 +179,7 @@ def test_trainer_freeze_encoder_ids() -> None:
     model = MultimodalModel(
         {"v": nn.Linear(2, 4), "t": nn.Linear(2, 4)},
         ConcatFusion(dim=-1),
-        MultiTaskLinearHead(8, {"cls": 3}),
+        MultiTaskLinearHead(8, {"cls": 1}),
         fusion_modality_order=["v", "t"],
     )
     cfg = TrainerConfig(
@@ -192,7 +192,7 @@ def test_trainer_freeze_encoder_ids() -> None:
     )
     Trainer(
         model,
-        [ClassificationTask("cls", "labels")],
+        [BinaryClassTask("cls", "labels")],
         torch.optim.SGD(model.parameters(), lr=0.1),
         cfg,
     )
@@ -204,7 +204,7 @@ def test_trainer_freeze_all_encoders() -> None:
     model = MultimodalModel(
         {"a": nn.Linear(1, 2), "b": nn.Linear(1, 2)},
         ConcatFusion(dim=-1),
-        MultiTaskLinearHead(4, {"cls": 2}),
+        MultiTaskLinearHead(4, {"cls": 1}),
         fusion_modality_order=["a", "b"],
     )
     cfg = TrainerConfig(
@@ -217,7 +217,7 @@ def test_trainer_freeze_all_encoders() -> None:
     )
     Trainer(
         model,
-        [ClassificationTask("cls", "labels")],
+        [BinaryClassTask("cls", "labels")],
         torch.optim.SGD(model.parameters(), lr=0.1),
         cfg,
     )
@@ -229,7 +229,7 @@ def test_trainer_freeze_unknown_modality_raises() -> None:
     model = MultimodalModel(
         {"v": nn.Linear(2, 2)},
         ConcatFusion(dim=-1),
-        MultiTaskLinearHead(2, {"cls": 2}),
+        MultiTaskLinearHead(2, {"cls": 1}),
         fusion_modality_order=["v"],
     )
     cfg = TrainerConfig(
@@ -243,7 +243,7 @@ def test_trainer_freeze_unknown_modality_raises() -> None:
     with pytest.raises(KeyError, match="unknown encoder id"):
         Trainer(
             model,
-            [ClassificationTask("cls", "labels")],
+            [BinaryClassTask("cls", "labels")],
             torch.optim.SGD(model.parameters(), lr=0.1),
             cfg,
         )
@@ -253,10 +253,10 @@ def test_trainer_format_metrics_precision() -> None:
     model = MultimodalModel(
         {"x": nn.Linear(1, 2)},
         ConcatFusion(dim=-1),
-        MultiTaskLinearHead(2, {"cls": 2}),
+        MultiTaskLinearHead(2, {"cls": 1}),
         fusion_modality_order=["x"],
     )
-    tasks: list[BaseTask] = [ClassificationTask("cls", "labels")]
+    tasks: list[BaseTask] = [BinaryClassTask("cls", "labels")]
     opt = torch.optim.SGD(model.parameters(), lr=0.01)
     cfg = TrainerConfig(
         max_epochs=1,
