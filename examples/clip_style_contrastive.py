@@ -72,15 +72,18 @@ def main() -> None:
 
     optimizer = torch.optim.Adam(model.parameters(), lr=3e-4)
     config = TrainerConfig(
-        max_epochs=3,
         device=device,
         mixed_precision=use_amp,
-        metric_precision=4,
-        progress_bar=True,
     )
     trainer = Trainer(model, tasks, optimizer, config)
     print(f"Data root: {root} | device={device} | contrastive on embs['image'] × embs['text']")
-    trainer.train(train_loader, val_loader)
+    trainer.train(
+        train_loader,
+        val_loader,
+        max_epochs=3,
+        metric_precision=4,
+        progress_bar=True,
+    )
 
 
 if __name__ == "__main__":

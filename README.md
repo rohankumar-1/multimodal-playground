@@ -30,6 +30,10 @@ If imports fail, ensure the package is installed as above or run `PYTHONPATH=src
 - For optimizers, use **`iter_training_parameters(model, tasks)`** so stateful per-task
   losses (e.g. a critic) are included; **`model.parameters()`** alone can miss those
   weights.
+- **`TrainerConfig`** (passed to **`Trainer(...)`**) covers device, DDP, mixed precision,
+  grad accumulation, gradient clipping, and encoder freezing. **`trainer.train(...)`**
+  takes **`max_epochs`** and optional **`log_every`**, **`progress_bar`**, **`metric_precision`**,
+  **`checkpoint_path`**, **`checkpoint_monitor_key`**, and **`patience`** for that run.
 
 ```python
 import torch
@@ -79,7 +83,6 @@ tasks = [
 
 optimizer = torch.optim.Adam(iter_training_parameters(model, tasks), lr=1e-3)
 config = TrainerConfig(
-    max_epochs=2,
     grad_accum_steps=1,
     mixed_precision=False,
     device="cpu",
@@ -95,12 +98,12 @@ val_loader = [
         "topic_y": torch.randint(0, n_topic, (8,)),
     },
 ]
-trainer.train(train_loader, val_loader=val_loader)
+trainer.train(train_loader, val_loader=val_loader, max_epochs=2)
 ```
 
 Use **`BinaryClassTask`** for binary targets in ``{0, 1}`` (BCE; threshold accuracy; validation **AUC** on the score when both classes appear). Use **`MultiClassTask`** for mutually exclusive ``K``-way labels (softmax cross-entropy; validation **macro AUC-OVR**, **macro AUC-OVO**, and **auc** = their average). Use **`MultiLabelClass`** for independent labels (BCE per entry on ``[B, L]`` multi-hot targets).
 
-For GPU training, set `device="cuda"` and `mixed_precision=True` in `TrainerConfig` (requires a CUDA device).
+For GPU training, set `device="cuda"` and `mixed_precision=True` in `TrainerConfig`. Pass `max_epochs`, logging, checkpoints, and early stopping via `trainer.train(..., max_epochs=..., patience=..., checkpoint_path=...)`.
 
 ### Freezing encoders (`TrainerConfig`)
 
@@ -113,7 +116,6 @@ The trainer can freeze encoder weights when it is constructed (after `model.to(d
 from multimodal.train import DDPConfig, TrainerConfig
 
 config = TrainerConfig(
-    max_epochs=2,
     grad_accum_steps=1,
     mixed_precision=False,
     device="cpu",
@@ -122,6 +124,7 @@ config = TrainerConfig(
     # ddp=DDPConfig(backend="nccl", sync_bn=True),  # when using DDP
 )
 trainer = Trainer(model, tasks, optimizer, config)
+# trainer.train(train_loader, val_loader=val_loader, max_epochs=2, ...)
 ```
 
 Optimizers created with `model.parameters()` still work: frozen parameters get no gradient and are not updated. To **exclude** frozen tensors from the optimizer entirely, use `filter(lambda p: p.requires_grad, model.parameters())`.

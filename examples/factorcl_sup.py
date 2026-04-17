@@ -44,12 +44,9 @@ def main() -> None:
 
     opt = torch.optim.Adam(iter_training_parameters(model, tasks), lr=1e-3)
     cfg = TrainerConfig(
-        max_epochs=2,
         grad_accum_steps=1,
         mixed_precision=False,
         device="cpu",
-        progress_bar=True,
-        log_every=1,
     )
 
     trainer = Trainer(model, tasks, opt, cfg)
@@ -59,7 +56,7 @@ def main() -> None:
         "x2": torch.randn(16, 12),
         "y": torch.randint(0, num_classes, (16,)),
     }
-    trainer.train([batch], val_loader=[batch])
+    trainer.train([batch], val_loader=[batch], max_epochs=2, progress_bar=True, log_every=1)
 
 
 if __name__ == "__main__":

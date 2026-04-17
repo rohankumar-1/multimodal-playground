@@ -15,13 +15,11 @@ from multimodal.tasks import BaseTask, BinaryClassTask, ContrastiveTask, MultiCl
 from multimodal.train import Trainer, TrainerConfig, iter_training_parameters
 
 
-def _cpu_config(max_epochs: int = 1) -> TrainerConfig:
+def _cpu_config() -> TrainerConfig:
     return TrainerConfig(
-        max_epochs=max_epochs,
         grad_accum_steps=1,
         mixed_precision=False,
         device="cpu",
-        progress_bar=False,
     )
 
 
@@ -34,7 +32,7 @@ def test_trainer_single_epoch_classification() -> None:
     )
     tasks: list[BaseTask] = [MultiClassTask("cls", "labels")]
     opt = torch.optim.SGD(model.parameters(), lr=0.5)
-    trainer = Trainer(model, tasks, opt, _cpu_config(max_epochs=1))
+    trainer = Trainer(model, tasks, opt, _cpu_config())
 
     batch = {
         "v": torch.randn(8, 2),
@@ -44,7 +42,7 @@ def test_trainer_single_epoch_classification() -> None:
     loader = [batch]
 
     w0 = next(model.parameters()).detach().clone()
-    trainer.train(loader)
+    trainer.train(loader, max_epochs=1, progress_bar=False)
     w1 = next(model.parameters()).detach().clone()
     assert not torch.allclose(w0, w1)
 
@@ -58,7 +56,7 @@ def test_trainer_with_val_loader() -> None:
     )
     tasks: list[BaseTask] = [BinaryClassTask("cls", "labels")]
     opt = torch.optim.SGD(model.parameters(), lr=0.01)
-    trainer = Trainer(model, tasks, opt, _cpu_config(max_epochs=1))
+    trainer = Trainer(model, tasks, opt, _cpu_config())
 
     train_loader = [
         {"x": torch.randn(4, 3), "labels": torch.tensor([0, 1, 0, 1])},
@@ -66,7 +64,7 @@ def test_trainer_with_val_loader() -> None:
     val_loader = [
         {"x": torch.randn(4, 3), "labels": torch.tensor([1, 0, 1, 0])},
     ]
-    trainer.train(train_loader, val_loader=val_loader)
+    trainer.train(train_loader, val_loader=val_loader, max_epochs=1, progress_bar=False)
 
 
 def test_trainer_patience_requires_val_loader() -> None:
@@ -78,17 +76,14 @@ def test_trainer_patience_requires_val_loader() -> None:
     )
     tasks: list[BaseTask] = [BinaryClassTask("cls", "labels")]
     opt = torch.optim.SGD(model.parameters(), lr=0.01)
-    cfg = TrainerConfig(
-        max_epochs=5,
-        grad_accum_steps=1,
-        mixed_precision=False,
-        device="cpu",
-        patience=2,
-        progress_bar=False,
-    )
-    trainer = Trainer(model, tasks, opt, cfg)
+    trainer = Trainer(model, tasks, opt, _cpu_config())
     with pytest.raises(ValueError, match="val_loader"):
-        trainer.train([{"x": torch.randn(2, 1), "labels": torch.tensor([0, 1])}])
+        trainer.train(
+            [{"x": torch.randn(2, 1), "labels": torch.tensor([0, 1])}],
+            max_epochs=5,
+            patience=2,
+            progress_bar=False,
+        )
 
 
 def test_trainer_patience_stops_early() -> None:
@@ -102,21 +97,20 @@ def test_trainer_patience_stops_early() -> None:
     )
     tasks: list[BaseTask] = [BinaryClassTask("cls", "labels")]
     opt = torch.optim.SGD(model.parameters(), lr=0.0)
-    cfg = TrainerConfig(
-        max_epochs=20,
-        grad_accum_steps=1,
-        mixed_precision=False,
-        device="cpu",
-        patience=2,
-        progress_bar=False,
-    )
-    trainer = Trainer(model, tasks, opt, cfg)
+    trainer = Trainer(model, tasks, opt, _cpu_config())
 
     train_loader = [{"x": torch.randn(4, 3), "labels": torch.tensor([0, 1, 0, 1])}]
     val_loader = [{"x": torch.randn(4, 3), "labels": torch.tensor([1, 0, 1, 0])}]
-    trainer.train(train_loader, val_loader=val_loader)
+    patience = 2
+    trainer.train(
+        train_loader,
+        val_loader=val_loader,
+        max_epochs=20,
+        patience=patience,
+        progress_bar=False,
+    )
 
-    assert cfg.patience is not None and trainer._epochs_without_improvement >= cfg.patience
+    assert trainer._epochs_without_improvement >= patience
     assert trainer._best_val_loss < float("inf")
 
 
@@ -129,16 +123,13 @@ def test_trainer_checkpoint_requires_val_loader() -> None:
     )
     tasks: list[BaseTask] = [BinaryClassTask("cls", "labels")]
     opt = torch.optim.SGD(model.parameters(), lr=0.01)
-    cfg = TrainerConfig(
-        max_epochs=1,
-        grad_accum_steps=1,
-        mixed_precision=False,
-        device="cpu",
-        checkpoint_path="/tmp/should_not_matter.pt",
-    )
-    trainer = Trainer(model, tasks, opt, cfg)
+    trainer = Trainer(model, tasks, opt, _cpu_config())
     with pytest.raises(ValueError, match="val_loader"):
-        trainer.train([{"x": torch.randn(2, 1), "labels": torch.tensor([0, 1])}])
+        trainer.train(
+            [{"x": torch.randn(2, 1), "labels": torch.tensor([0, 1])}],
+            max_epochs=1,
+            checkpoint_path="/tmp/should_not_matter.pt",
+        )
 
 
 def test_trainer_saves_checkpoint_on_val(tmp_path: Path) -> None:
@@ -151,19 +142,17 @@ def test_trainer_saves_checkpoint_on_val(tmp_path: Path) -> None:
     )
     tasks: list[BaseTask] = [BinaryClassTask("cls", "labels")]
     opt = torch.optim.SGD(model.parameters(), lr=0.01)
-    cfg = TrainerConfig(
-        max_epochs=1,
-        grad_accum_steps=1,
-        mixed_precision=False,
-        device="cpu",
-        checkpoint_path=str(ckpt),
-        progress_bar=False,
-    )
-    trainer = Trainer(model, tasks, opt, cfg)
+    trainer = Trainer(model, tasks, opt, _cpu_config())
 
     train_loader = [{"x": torch.randn(4, 3), "labels": torch.tensor([0, 1, 0, 1])}]
     val_loader = [{"x": torch.randn(4, 3), "labels": torch.tensor([1, 0, 1, 0])}]
-    trainer.train(train_loader, val_loader=val_loader)
+    trainer.train(
+        train_loader,
+        val_loader=val_loader,
+        max_epochs=1,
+        checkpoint_path=str(ckpt),
+        progress_bar=False,
+    )
 
     assert ckpt.is_file()
     try:
@@ -183,12 +172,10 @@ def test_trainer_freeze_encoder_ids() -> None:
         fusion_modality_order=["v", "t"],
     )
     cfg = TrainerConfig(
-        max_epochs=1,
         grad_accum_steps=1,
         mixed_precision=False,
         device="cpu",
         freeze_encoder_ids=("v",),
-        progress_bar=False,
     )
     Trainer(
         model,
@@ -208,12 +195,10 @@ def test_trainer_freeze_all_encoders() -> None:
         fusion_modality_order=["a", "b"],
     )
     cfg = TrainerConfig(
-        max_epochs=1,
         grad_accum_steps=1,
         mixed_precision=False,
         device="cpu",
         freeze_all_encoders=True,
-        progress_bar=False,
     )
     Trainer(
         model,
@@ -233,12 +218,10 @@ def test_trainer_freeze_unknown_modality_raises() -> None:
         fusion_modality_order=["v"],
     )
     cfg = TrainerConfig(
-        max_epochs=1,
         grad_accum_steps=1,
         mixed_precision=False,
         device="cpu",
         freeze_encoder_ids=("not_a_modality",),
-        progress_bar=False,
     )
     with pytest.raises(KeyError, match="unknown encoder id"):
         Trainer(
@@ -258,16 +241,8 @@ def test_trainer_format_metrics_precision() -> None:
     )
     tasks: list[BaseTask] = [BinaryClassTask("cls", "labels")]
     opt = torch.optim.SGD(model.parameters(), lr=0.01)
-    cfg = TrainerConfig(
-        max_epochs=1,
-        grad_accum_steps=1,
-        mixed_precision=False,
-        device="cpu",
-        metric_precision=2,
-        progress_bar=False,
-    )
-    trainer = Trainer(model, tasks, opt, cfg)
-    s = trainer._format_metrics({"a": 1.23456, "b": 9.0})
+    trainer = Trainer(model, tasks, opt, _cpu_config())
+    s = trainer._format_metrics({"a": 1.23456, "b": 9.0}, metric_precision=2)
     assert "a=1.23" in s
     assert "b=9.00" in s
 
@@ -302,7 +277,7 @@ def test_iter_training_parameters_dedupes_when_task_module_is_submodule_of_model
             return (self._mod,)
 
         def compute_loss(self, preds, embs, batch):
-            return torch.tensor(0.0), {}
+            return torch.tensor(0.0)
 
     m = Toy()
     tasks = [SharingTask(m.shared)]

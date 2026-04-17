@@ -34,18 +34,16 @@ class DDPConfig:
 
 @dataclass
 class TrainerConfig:
-    max_epochs: int
+    """Construction-time options: device, DDP, AMP, optimization step shape, encoder freezing.
+
+    Per-run settings (epochs, logging, checkpoints, early stopping) belong on
+    :meth:`Trainer.train` keyword arguments.
+    """
+
     grad_accum_steps: int = 1
     mixed_precision: bool = True
-    log_every: int = 100
     clip_grad_norm: float | None = None
     device: str = "cuda"
-    #: If set, save ``torch.save`` checkpoints to this path whenever validation loss
-    #: hits a new minimum. Requires ``val_loader`` in :meth:`Trainer.train`.
-    checkpoint_path: str | None = None
-    #: Metric key in aggregated validation metrics to minimize (e.g. ``"cls/loss"``).
-    #: If ``None``, sums all values whose keys end with ``"/loss"`` (multi-task total).
-    checkpoint_monitor_key: str | None = None
     #: If True, set ``requires_grad=False`` on every submodule in ``model.encoders``.
     #: When True, :attr:`freeze_encoder_ids` is ignored.
     freeze_all_encoders: bool = False
@@ -58,14 +56,6 @@ class TrainerConfig:
     #: If ``True``, require multi-process launch; if ``False``, never wrap with DDP.
     distributed: bool | None = None
     ddp: DDPConfig = field(default_factory=DDPConfig)
-    #: If True, show a tqdm progress bar (rank 0 only under DDP).
-    progress_bar: bool = True
-    #: Decimal precision when printing metric dicts.
-    metric_precision: int = 4
-    #: Stop after this many consecutive epochs without validation improvement (lower
-    #: is better on the same scalar as checkpointing: :attr:`checkpoint_monitor_key`
-    #: or the sum of ``*/loss`` keys). Requires ``val_loader``. ``None`` disables.
-    patience: int | None = None
 
 
 def iter_training_parameters(
@@ -101,6 +91,13 @@ def iter_training_parameters(
 
 
 class Trainer:
+    """Runs optimization given ``model``, ``tasks``, ``optimizer``, and :class:`TrainerConfig`.
+
+    Call :meth:`train` with loaders and keyword arguments for **this run** (epochs, logging,
+    checkpoints, early stopping). :class:`TrainerConfig` holds device, DDP, AMP, grad
+    accumulation, clipping, and encoder freezing—things fixed when the trainer is built.
+    """
+
     def __init__(
         self,
         model: nn.Module,
@@ -240,14 +237,39 @@ class Trainer:
     # -----------------------------------------------------
     # Public training loop
     # -----------------------------------------------------
-    def train(self, train_loader, val_loader=None):
-        if self.config.checkpoint_path and val_loader is None:
+    def train(
+        self,
+        train_loader,
+        val_loader=None,
+        *,
+        max_epochs: int,
+        log_every: int = 100,
+        progress_bar: bool = True,
+        metric_precision: int = 4,
+        checkpoint_path: str | None = None,
+        checkpoint_monitor_key: str | None = None,
+        patience: int | None = None,
+    ) -> None:
+        """Run training for ``max_epochs`` (and optional validation each epoch).
+
+        Args:
+            train_loader: Training data iterator.
+            val_loader: If set, run validation after each train epoch.
+            max_epochs: Number of train/val cycles.
+            log_every: Steps between tqdm postfix updates (train/val bar).
+            progress_bar: Rank-0 tqdm on each epoch (requires ``tqdm`` if True).
+            metric_precision: Float formatting for printed metrics.
+            checkpoint_path: Save ``torch.save`` payload when validation improves (needs ``val_loader``).
+            checkpoint_monitor_key: Val metric key to minimize; if ``None``, sum of ``*/loss`` keys.
+            patience: Early-stop after this many epochs without val improvement; needs ``val_loader``.
+        """
+        if checkpoint_path and val_loader is None:
             raise ValueError(
                 "checkpoint_path is set but val_loader is None; "
                 "provide a validation loader to track validation loss."
             )
-        if self.config.patience is not None:
-            if self.config.patience < 1:
+        if patience is not None:
+            if patience < 1:
                 raise ValueError("patience must be >= 1 when set.")
             if val_loader is None:
                 raise ValueError(
@@ -257,18 +279,24 @@ class Trainer:
 
         self._epochs_without_improvement = 0
 
-        for epoch in range(self.config.max_epochs):
+        for epoch in range(max_epochs):
             self._set_sampler_epoch(train_loader, epoch)
             self._maybe_warn_non_distributed_sampler(train_loader, train=True)
 
             self.model.train()
             if is_main_process():
-                print(f"\n===== Epoch {epoch+1}/{self.config.max_epochs} =====")
+                print(f"\n===== Epoch {epoch+1}/{max_epochs} =====")
 
-            train_metrics = self._run_one_epoch(train_loader, train=True)
+            train_metrics = self._run_one_epoch(
+                train_loader,
+                train=True,
+                log_every=log_every,
+                progress_bar=progress_bar,
+                metric_precision=metric_precision,
+            )
             train_metrics = reduce_mean_dict(train_metrics, self._device)
             if is_main_process():
-                print(f"Train: {self._format_metrics(train_metrics)}")
+                print(f"Train: {self._format_metrics(train_metrics, metric_precision)}")
 
             if val_loader is not None:
                 self._set_sampler_epoch(val_loader, epoch)
@@ -276,12 +304,20 @@ class Trainer:
 
                 self.model.eval()
                 with torch.no_grad():
-                    val_metrics = self._run_one_epoch(val_loader, train=False)
+                    val_metrics = self._run_one_epoch(
+                        val_loader,
+                        train=False,
+                        log_every=log_every,
+                        progress_bar=progress_bar,
+                        metric_precision=metric_precision,
+                    )
                 val_metrics = reduce_mean_dict(val_metrics, self._device)
                 if is_main_process():
-                    print(f"Val:   {self._format_metrics(val_metrics)}")
+                    print(f"Val:   {self._format_metrics(val_metrics, metric_precision)}")
 
-                val_loss = self._validation_loss_scalar(val_metrics)
+                val_loss = self._validation_loss_scalar(
+                    val_metrics, checkpoint_monitor_key
+                )
                 improved = val_loss < self._best_val_loss
                 if improved:
                     self._best_val_loss = val_loss
@@ -289,9 +325,9 @@ class Trainer:
                 else:
                     self._epochs_without_improvement += 1
 
-                if self.config.checkpoint_path and improved:
+                if checkpoint_path and improved:
                     self._save_checkpoint(
-                        self.config.checkpoint_path,
+                        checkpoint_path,
                         epoch=epoch,
                         val_metrics=val_metrics,
                         val_loss=val_loss,
@@ -299,16 +335,16 @@ class Trainer:
                     if is_main_process():
                         print(
                             f"Saved best checkpoint (val_loss={val_loss:.6f}) "
-                            f"-> {self.config.checkpoint_path}"
+                            f"-> {checkpoint_path}"
                         )
                     barrier()
 
-                if self.config.patience is not None:
-                    if self._epochs_without_improvement >= self.config.patience:
+                if patience is not None:
+                    if self._epochs_without_improvement >= patience:
                         if is_main_process():
                             print(
                                 f"Early stopping: no validation improvement for "
-                                f"{self.config.patience} epoch(s) "
+                                f"{patience} epoch(s) "
                                 f"(best val_loss={self._best_val_loss:.6f})."
                             )
                         break
@@ -316,7 +352,15 @@ class Trainer:
     # -----------------------------------------------------
     # One epoch pass (training or validation)
     # -----------------------------------------------------
-    def _run_one_epoch(self, loader, train: bool):
+    def _run_one_epoch(
+        self,
+        loader,
+        train: bool,
+        *,
+        log_every: int,
+        progress_bar: bool,
+        metric_precision: int,
+    ):
         running_metrics = {}
         step = 0
         loss_running_sum = 0.0
@@ -326,7 +370,7 @@ class Trainer:
 
         it = loader
         pbar = None
-        if self.config.progress_bar and is_main_process():
+        if progress_bar and is_main_process():
             try:
                 from tqdm.auto import tqdm
 
@@ -341,7 +385,7 @@ class Trainer:
                 if not self._warned_tqdm_missing:
                     warnings.warn(
                         "progress_bar=True but tqdm is not available; "
-                        "install tqdm or set TrainerConfig.progress_bar=False.",
+                        "install tqdm or pass progress_bar=False to train().",
                         UserWarning,
                         stacklevel=2,
                     )
@@ -366,9 +410,9 @@ class Trainer:
             step += 1
             if pbar is not None:
                 pbar.update(1)
-                if self.config.log_every and (step % self.config.log_every == 0):
+                if log_every and (step % log_every == 0):
                     postfix = self._tqdm_postfix_running_loss(
-                        loss_running_sum, loss_running_count
+                        loss_running_sum, loss_running_count, metric_precision
                     )
                     if postfix is not None:
                         pbar.set_postfix(postfix)
@@ -384,20 +428,20 @@ class Trainer:
         return final_metrics
 
     def _tqdm_postfix_running_loss(
-        self, loss_sum: float, loss_count: int
+        self, loss_sum: float, loss_count: int, metric_precision: int
     ) -> dict[str, float] | None:
         """Postfix for tqdm: mean ``loss`` over all batches seen so far this epoch."""
         if loss_count <= 0:
             return None
-        prec = int(self.config.metric_precision)
+        prec = int(metric_precision)
         try:
             avg = loss_sum / loss_count
             return {"loss": float(round(avg, prec))}
         except Exception:
             return None
 
-    def _format_metrics(self, metrics: dict[str, float]) -> str:
-        prec = int(self.config.metric_precision)
+    def _format_metrics(self, metrics: dict[str, float], metric_precision: int) -> str:
+        prec = int(metric_precision)
         items = []
         for k in sorted(metrics.keys()):
             v = metrics[k]
@@ -477,21 +521,25 @@ class Trainer:
             return [self._move_to_device(v) for v in batch]
         return batch
 
-    def _validation_loss_scalar(self, val_metrics: dict[str, float]) -> float:
+    def _validation_loss_scalar(
+        self,
+        val_metrics: dict[str, float],
+        checkpoint_monitor_key: str | None,
+    ) -> float:
         """Single scalar to minimize for best-checkpoint selection."""
-        key = self.config.checkpoint_monitor_key
-        if key is not None:
-            if key not in val_metrics:
+        if checkpoint_monitor_key is not None:
+            if checkpoint_monitor_key not in val_metrics:
                 raise KeyError(
-                    f"checkpoint_monitor_key {key!r} not in val metrics: {sorted(val_metrics)}"
+                    f"checkpoint_monitor_key {checkpoint_monitor_key!r} not in val metrics: "
+                    f"{sorted(val_metrics)}"
                 )
-            return float(val_metrics[key])
+            return float(val_metrics[checkpoint_monitor_key])
 
         loss_keys = [k for k in val_metrics if k.endswith("/loss")]
         if not loss_keys:
             raise ValueError(
                 "No keys ending with '/loss' in val metrics; "
-                "set checkpoint_monitor_key on TrainerConfig to the metric to minimize."
+                "pass checkpoint_monitor_key=... to train() for the metric to minimize."
             )
         return float(sum(val_metrics[k] for k in loss_keys))
 

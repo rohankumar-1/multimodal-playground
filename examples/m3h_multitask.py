@@ -110,7 +110,6 @@ def main() -> None:
     optimizer = torch.optim.Adam(model.parameters(), lr=1e-3)
 
     config = TrainerConfig(
-        max_epochs=5,
         device=device,
         mixed_precision=use_amp,
         grad_accum_steps=1,
@@ -119,7 +118,7 @@ def main() -> None:
 
     trainer = Trainer(model, tasks, optimizer, config)
     print(f"Device: {device} (AMP: {use_amp})")
-    trainer.train(train_loader, val_loader)
+    trainer.train(train_loader, val_loader, max_epochs=5)
 
 
 if __name__ == "__main__":
